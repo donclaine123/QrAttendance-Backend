@@ -16,7 +16,9 @@ app.use(bodyParser.json());
 // Mock database
 const users = [
   { id: 1, email: "teacher@example.com", password: "teacher123", role: "teacher" },
-  { id: 2, email: "student@example.com", password: "student123", role: "student" },
+  { id: 2, email: "student1@example.com", password: "student123", role: "student" },
+  { id: 3, email: "student2@example.com", password: "student1234", role: "student" },
+  { id: 4, email: "student3@example.com", password: "student12345", role: "student" },
 ];
 
 const sessions = [];
