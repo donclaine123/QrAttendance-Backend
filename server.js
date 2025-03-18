@@ -96,3 +96,28 @@ app.get("/attendance", (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
 });
+
+// Register endpoint
+app.post("/register", (req, res) => {
+  const { role, email, firstName, lastName, password, studentId } = req.body;
+
+  // Check if email already exists
+  const existingUser = users.find((u) => u.email === email);
+  if (existingUser) {
+    return res.status(400).json({ success: false, message: "Email already registered." });
+  }
+
+  // Create new user
+  const newUser = {
+    id: users.length + 1,
+    email,
+    password,
+    role,
+    firstName,
+    lastName,
+    studentId: role === 'student' ? studentId : null,
+  };
+
+  users.push(newUser);
+  res.json({ success: true, message: "Registration successful!" });
+});
