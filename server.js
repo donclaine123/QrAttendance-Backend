@@ -35,12 +35,12 @@ app.post("/login", (req, res) => {
 
 // Generate QR code endpoint
 app.post("/generate-qr", async (req, res) => {
-  const { sessionId } = req.body;
+  const { sessionId, userId } = req.body; // Include userId in the request
   const qrData = JSON.stringify({ sessionId, timestamp: Date.now() });
 
   try {
     const qrCodeUrl = await QRCode.toDataURL(qrData);
-    sessions.push({ sessionId, qrData });
+    sessions.push({ sessionId, qrData, createdBy: userId }); // Track who created the session
     res.json({ success: true, qrCodeUrl });
   } catch (err) {
     res.status(500).json({ success: false, message: "Failed to generate QR code" });
@@ -89,7 +89,18 @@ app.post("/scan-qr", (req, res) => {
 
 // View attendance endpoint
 app.get("/attendance", (req, res) => {
-  res.json({ success: true, attendance });
+  const { userId } = req.query; // Get the logged-in teacher's userId
+
+  // Filter sessions created by this teacher
+  const teacherSessions = sessions.filter((session) => session.createdBy === userId);
+  const sessionIds = teacherSessions.map((session) => session.sessionId);
+
+  // Filter attendance records for these sessions
+  const teacherAttendance = attendance.filter((record) =>
+    sessionIds.includes(record.sessionId)
+  );
+
+  res.json({ success: true, attendance: teacherAttendance });
 });
 
 // Start the server
