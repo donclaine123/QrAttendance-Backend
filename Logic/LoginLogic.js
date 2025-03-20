@@ -47,7 +47,8 @@ exports.register = async (req, res) => {
         }
 
         // 🔹 Send verification email
-        const verifyUrl = `https://your-frontend-url.com/verify?token=${verificationToken}`;
+        // const verifyUrl = `http://localhost:5000/auth/verify?token=${verificationToken}`;;
+        const verifyUrl = `https://splendorous-paprenjak-09a988.netlify.app/pages/verify.html?token=${verificationToken}`;;
         await transporter.sendMail({
             from: process.env.EMAIL_USER,
             to: email,
