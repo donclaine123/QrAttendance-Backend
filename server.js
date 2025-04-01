@@ -10,6 +10,8 @@ const CustomMySQLStore = require('./Routes/CustomSessionStore');
 const qrSystem = require("./Routes/QrSystem");
 const crypto = require('crypto');
 
+// Check if we're in development or production
+const isDev = process.env.NODE_ENV !== 'production';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -85,16 +87,13 @@ const sessionMiddleware = session({
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: !isDev, // Enable secure in production
-    sameSite: isDev ? 'lax' : 'none', // Proper SameSite for cross-origin in production
+    secure: process.env.NODE_ENV === 'production', // Enable secure in production
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // Proper SameSite for cross-origin in production
     maxAge: parseInt(process.env.SESSION_LIFETIME) || 24 * 60 * 60 * 1000, // Use env variable or default to 24 hours
     path: '/'
   },
   name: 'qr_attendance_sid' // Consistent cookie name
 });
-
-// Check if we're in development or production
-const isDev = process.env.NODE_ENV !== 'production';
 
 // Log only important session events in development
 if (isDev) {
