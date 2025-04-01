@@ -101,14 +101,14 @@ router.post("/login", async (req, res) => {
         
         // Return user data and session info
         return res.json({ 
-          success: true,
-          role,
-          user: {
-            id: user.id,
-            firstName: user.first_name,
+      success: true,
+      role,
+      user: {
+        id: user.id,
+        firstName: user.first_name,
             lastName: user.last_name,
             email: email
-          },
+      },
           sessionId: req.sessionID,
           redirect: role === 'teacher' ? '/pages/teacher-dashboard.html' : '/pages/student-dashboard.html'
         });
