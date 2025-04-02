@@ -863,82 +863,99 @@ router.post('/reauth', async (req, res) => {
       });
     }
     
-    // Clear any existing session data
-    req.session.regenerate(async function(err) {
-      if (err) {
-        console.error("Error regenerating session:", err);
+    // Set up session - don't regenerate, just update the existing one
+    console.log("Setting up new session for user", userId);
+    req.session.userId = userData.id;
+    req.session.role = role;
+    req.session.firstName = userData.first_name;
+    req.session.lastName = userData.last_name;
+    req.session.email = userData.email;
+    req.session.createdAt = new Date().toISOString();
+    req.session.lastActivity = new Date().toISOString();
+    
+    // Create or update database session record directly
+    try {
+      console.log("Ensuring session record exists in database");
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+      
+      await db.query(
+        `INSERT INTO sessions (session_id, data, expires_at, user_id, role, is_active)
+         VALUES (?, ?, ?, ?, ?, TRUE)
+         ON DUPLICATE KEY UPDATE
+           data = VALUES(data),
+           expires_at = VALUES(expires_at),
+           is_active = TRUE,
+           last_activity = NOW()`,
+        [
+          req.sessionID,
+          JSON.stringify(req.session),
+          expiresAt,
+          userData.id,
+          role
+        ]
+      );
+      
+      console.log(`Database session record created/updated for ${req.sessionID}`);
+    } catch (dbError) {
+      console.error("Error saving session to database:", dbError);
+      // Continue anyway, the req.session.save might still work
+    }
+    
+    // Save the session
+    req.session.save(function(saveErr) {
+      if (saveErr) {
+        console.error("Error saving session:", saveErr);
         return res.status(500).json({ 
           success: false, 
-          message: "Session regeneration failed", 
-          error: err.message
+          message: "Session save failed", 
+          error: saveErr.message
         });
       }
       
-      // Set up a new session
-      req.session.userId = userData.id;
-      req.session.role = role;
-      req.session.firstName = userData.first_name;
-      req.session.lastName = userData.last_name;
-      req.session.email = userData.email;
-      req.session.createdAt = new Date().toISOString();
-      req.session.lastActivity = new Date().toISOString();
+      console.log(`✅ Re-authentication successful for user ${userData.id}. Session ID:`, req.sessionID);
       
-      // Save the session
-      req.session.save(function(saveErr) {
-        if (saveErr) {
-          console.error("Error saving session:", saveErr);
-          return res.status(500).json({ 
-            success: false, 
-            message: "Session save failed", 
-            error: saveErr.message
-          });
-        }
+      // Set cookie explicitly with correct settings
+      const cookieOptions = {
+        httpOnly: true,
+        path: '/',
+        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+      };
+      
+      // Configure cookie for the environment
+      if (process.env.NODE_ENV === 'production') {
+        cookieOptions.secure = true;
+        cookieOptions.sameSite = 'none';
         
-        console.log(`✅ Re-authentication successful for user ${userData.id}. Session ID:`, req.sessionID);
-        
-        // Set cookie explicitly with correct settings
-        const cookieOptions = {
-          httpOnly: true,
-          path: '/',
-          maxAge: 24 * 60 * 60 * 1000 // 24 hours
-        };
-        
-        // Configure cookie for the environment
-        if (process.env.NODE_ENV === 'production') {
-          cookieOptions.secure = true;
-          cookieOptions.sameSite = 'none';
-          
-          // Add domain for cross-site cookies in production
-          if (req.headers.origin) {
-            try {
-              const originUrl = new URL(req.headers.origin);
-              if (originUrl.hostname.includes('netlify.app')) {
-                cookieOptions.domain = originUrl.hostname;
-              }
-            } catch (err) {
-              console.error('Error parsing origin for cookie domain:', err);
+        // Add domain for cross-site cookies in production
+        if (req.headers.origin) {
+          try {
+            const originUrl = new URL(req.headers.origin);
+            if (originUrl.hostname.includes('netlify.app')) {
+              cookieOptions.domain = originUrl.hostname;
             }
+          } catch (err) {
+            console.error('Error parsing origin for cookie domain:', err);
           }
-        } else {
-          cookieOptions.secure = false;
-          cookieOptions.sameSite = 'lax';
         }
-        
-        console.log(`🍪 Setting session cookie with options:`, cookieOptions);
-        res.cookie('qr_attendance_sid', req.sessionID, cookieOptions);
-        
-        // Return success with session info
-        return res.json({ 
-          success: true,
-          message: "Re-authentication successful",
-          sessionId: req.sessionID,
-          user: {
-            id: userData.id,
-            firstName: userData.first_name,
-            lastName: userData.last_name
-          },
-          role: role
-        });
+      } else {
+        cookieOptions.secure = false;
+        cookieOptions.sameSite = 'lax';
+      }
+      
+      console.log(`🍪 Setting session cookie with options:`, cookieOptions);
+      res.cookie('qr_attendance_sid', req.sessionID, cookieOptions);
+      
+      // Return success with session info
+      return res.json({ 
+        success: true,
+        message: "Re-authentication successful",
+        sessionId: req.sessionID,
+        user: {
+          id: userData.id,
+          firstName: userData.first_name,
+          lastName: userData.last_name
+        },
+        role: role
       });
     });
   } catch (error) {
