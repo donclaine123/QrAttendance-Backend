@@ -76,6 +76,29 @@ router.post("/login", async (req, res) => {
       req.session.createdAt = new Date().toISOString();
       req.session.lastActivity = new Date().toISOString();
       
+      // Check for and invalidate existing active sessions for this user
+      try {
+        const [existingSessions] = await db.query(
+          `SELECT session_id FROM sessions 
+           WHERE user_id = ? AND role = ? AND is_active = TRUE AND session_id != ?`,
+          [user.id, role, req.sessionID]
+        );
+        
+        if (existingSessions.length > 0) {
+          console.log(`Found ${existingSessions.length} existing sessions for user ${user.id}. Invalidating them.`);
+          
+          await db.query(
+            `UPDATE sessions 
+             SET is_active = FALSE, expires_at = NOW()
+             WHERE user_id = ? AND role = ? AND session_id != ?`,
+            [user.id, role, req.sessionID]
+          );
+        }
+      } catch (dbError) {
+        console.error("Error checking for existing sessions:", dbError);
+        // Continue anyway, not critical
+      }
+      
       // Save the session
       req.session.save(function(saveErr) {
         if (saveErr) {

@@ -149,8 +149,9 @@ class CustomMySQLStore extends Store {
         // Check for any active sessions for this teacher across all session IDs
         const [existingTeacherSessions] = await conn.query(
           `SELECT session_id FROM sessions 
-           WHERE user_id = ? AND role = 'teacher' AND is_active = TRUE`,
-          [session.userId]
+           WHERE user_id = ? AND role = 'teacher' AND is_active = TRUE
+           AND session_id != ?`,
+          [session.userId, sid]
         );
         
         if (shouldLog && process.env.DEBUG) {
@@ -163,15 +164,18 @@ class CustomMySQLStore extends Store {
         
         // Invalidate all previous sessions for this teacher in a single atomic operation
         if (existingTeacherSessions.length > 0) {
+          console.log(`⚠️ Invalidating ${existingTeacherSessions.length} previous sessions for teacher ${session.userId}`);
+          
           await conn.query(
             `UPDATE sessions 
-             SET expires_at = NOW(), is_active = FALSE 
+             SET expires_at = NOW(), is_active = FALSE, data = JSON_SET(data, '$.invalidated', true)
              WHERE user_id = ? AND role = 'teacher' AND session_id != ? AND is_active = TRUE`,
             [session.userId, sid]
           );
           
-          if (shouldLog && process.env.DEBUG) {
-            console.log(`Invalidated ${existingTeacherSessions.length} previous sessions`);
+          // For debugging purposes, list the invalidated sessions
+          if (process.env.DEBUG) {
+            console.log("Invalidated sessions:", existingTeacherSessions.map(s => s.session_id).join(', '));
           }
         }
         

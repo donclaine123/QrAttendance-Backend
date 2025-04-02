@@ -169,6 +169,37 @@ process.on('SIGTERM', () => {
   }
 });
 
+// Session cleanup routine
+async function cleanupExpiredSessions() {
+  try {
+    // Delete any sessions that have expired
+    const [deleteResult] = await db.query(
+      `DELETE FROM sessions WHERE expires_at < NOW() OR is_active = FALSE`
+    );
+    
+    if (deleteResult.affectedRows > 0) {
+      console.log(`🧹 Cleaned up ${deleteResult.affectedRows} expired/inactive sessions`);
+    }
+    
+    // Count remaining sessions
+    const [countResult] = await db.query(
+      `SELECT COUNT(*) AS total FROM sessions`
+    );
+    
+    if (countResult[0]?.total > 0) {
+      console.log(`ℹ️ Current active sessions: ${countResult[0].total}`);
+    }
+  } catch (error) {
+    console.error('❌ Error cleaning up sessions:', error);
+  }
+  
+  // Schedule next cleanup
+  setTimeout(cleanupExpiredSessions, 30 * 60 * 1000); // Every 30 minutes
+}
+
+// Start initial cleanup after server starts
+setTimeout(cleanupExpiredSessions, 60 * 1000); // 1 minute after startup
+
 // API routes
 app.use("/auth", loginSystem);  
 app.use("/auth", attendanceSystem);
