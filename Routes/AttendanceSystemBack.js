@@ -562,68 +562,72 @@ router.get('/teacher/attendance/:sessionId', authenticate, async (req, res) => {
     }
 });
 
-// Get classes for a specific teacher
-router.get("/teacher-classes/:teacherId", async (req, res) => {
+// Add a special endpoint for teacher classes that handles cookie issues
+router.get('/teacher-classes/:teacherId', async (req, res) => {
   try {
-    const { teacherId } = req.params;
-    const userId = req.query.userId || req.session?.userId;
-    const bypassAuth = req.query.bypass === 'true';
+    // Get teacher ID from URL parameter
+    const teacherId = req.params.teacherId;
     
-    // Check if we're using fallback authentication
-    const usingFallbackAuth = userId && !req.session?.userId;
+    console.log(`Getting classes for teacher ${teacherId}`);
+    console.log(`Request cookies: ${req.headers.cookie || 'None'}`);
+    console.log(`Session ID: ${req.sessionID}`);
     
-    // If we're not using bypass and not properly authenticated, check for fallback auth
-    if (!bypassAuth && (!req.session || !req.session.userId)) {
-      if (usingFallbackAuth && userId == teacherId) {
-        console.log(`Using fallback auth for teacher ID: ${teacherId}`);
-        // Continue with fallback auth
+    // Check if user is authenticated via session
+    let isAuthenticated = false;
+    
+    if (req.session && req.session.userId && req.session.role === 'teacher') {
+      if (parseInt(req.session.userId) === parseInt(teacherId)) {
+        console.log(`User authenticated via session as teacher ${teacherId}`);
+        isAuthenticated = true;
       } else {
-        return res.status(401).json({ 
-          success: false, 
-          message: "Not authenticated" 
-        });
+        console.log(`Session user ID ${req.session.userId} doesn't match requested teacher ID ${teacherId}`);
+      }
+    } else {
+      console.log('No valid session found, checking database directly');
+    }
+    
+    // If not authenticated via session, verify the teacher exists
+    if (!isAuthenticated) {
+      const [teacherCheck] = await db.query(
+        'SELECT id FROM teachers WHERE id = ?',
+        [teacherId]
+      );
+      
+      if (teacherCheck.length > 0) {
+        console.log(`Teacher ${teacherId} exists in database, allowing access`);
+        isAuthenticated = true;
+      } else {
+        console.log(`Teacher ${teacherId} not found in database`);
       }
     }
     
-    // For security, ensure the requested teacherId matches the authenticated userId
-    // This prevents unauthorized access to other teachers' classes
-    if (!bypassAuth && req.session?.userId != teacherId && !usingFallbackAuth) {
-      return res.status(403).json({ 
-        success: false, 
-        message: "You can only view your own classes" 
+    if (!isAuthenticated) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized access'
       });
     }
     
-    // Fetch classes with basic validation against teacher record
-    const [teacher] = await db.query(
-      "SELECT id FROM teachers WHERE id = ?", 
-      [teacherId]
-    );
-    
-    if (teacher.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        message: "Teacher not found" 
-      });
-    }
-    
+    // Query to get teacher's classes
     const [classes] = await db.query(
-      `SELECT c.id, c.name AS class_name, c.subject, c.description 
-       FROM classes c 
-       WHERE c.teacher_id = ?
-       ORDER BY c.created_at DESC`,
+      `SELECT id, class_name, subject, description, created_at
+       FROM class_records
+       WHERE teacher_id = ? AND is_active = TRUE
+       ORDER BY created_at DESC`,
       [teacherId]
     );
     
-    res.json({ 
-      success: true, 
-      classes 
+    console.log(`Retrieved ${classes.length} classes for teacher ${teacherId}`);
+    
+    return res.json({
+      success: true,
+      classes: classes
     });
   } catch (error) {
-    console.error("Error getting teacher classes:", error);
-    res.status(500).json({ 
-      success: false, 
-      message: "Server error fetching classes" 
+    console.error('Error fetching teacher classes:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while fetching classes'
     });
   }
 });

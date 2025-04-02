@@ -79,11 +79,20 @@ class CustomMySQLStore extends Store {
       return callback(null);
     }
     
-    // Log all session operations in production during debugging
-    const shouldLog = true;
+    // Only log in development mode and for important sessions
+    const shouldLog = process.env.NODE_ENV !== 'production' && 
+                     !sid.includes('health');
     
     if (shouldLog) {
-      console.log(`💾 Storing session ${sid.substring(0, 8)}... for user ${session.userId} (${session.role})`);
+      console.log(`💾 Storing session ${sid.substring(0, 8)}...`);
+      
+      // Log session contents only in debug mode
+      if (process.env.DEBUG) {
+        console.log("Session data:", {
+          userId: session.userId,
+          role: session.role
+        });
+      }
     }
     
     let conn;
@@ -102,73 +111,101 @@ class CustomMySQLStore extends Store {
         return;
       }
 
-      // Check if this exact session already exists to avoid duplicate work
-      const [existingSession] = await conn.query(
-        `SELECT session_id FROM sessions 
-         WHERE session_id = ? AND user_id = ?`,
-        [sid, session.userId]
-      );
-      
-      // If the session already exists for this user, just update it
-      if (existingSession.length > 0) {
-        if (shouldLog) {
-          console.log(`⚡ Updating existing session: ${sid.substring(0, 8)}`);
+      // If this is a teacher session, handle it atomically
+      if (session.role === 'teacher') {
+        // First check if this exact session already exists to avoid duplicate work
+        const [existingSession] = await conn.query(
+          `SELECT session_id FROM sessions 
+           WHERE session_id = ? AND user_id = ? AND role = 'teacher'`,
+          [sid, session.userId]
+        );
+        
+        // If the session already exists for this user, just update it
+        if (existingSession.length > 0) {
+          if (shouldLog && process.env.DEBUG) {
+            console.log(`Updating existing teacher session`);
+          }
+          
+          await conn.query(
+            `UPDATE sessions 
+             SET data = ?, expires_at = ?, is_active = TRUE, last_activity = NOW()
+             WHERE session_id = ?`,
+            [
+              JSON.stringify(session),
+              expiresAt,
+              sid
+            ]
+          );
+          
+          // Commit transaction
+          await conn.commit();
+          if (shouldLog) {
+            console.log("✅ Session updated");
+          }
+          callback(null);
+          return;
+        }
+
+        // Check for any active sessions for this teacher across all session IDs
+        const [existingTeacherSessions] = await conn.query(
+          `SELECT session_id FROM sessions 
+           WHERE user_id = ? AND role = 'teacher' AND is_active = TRUE
+           AND session_id != ?`,
+          [session.userId, sid]
+        );
+        
+        if (shouldLog && process.env.DEBUG) {
+          console.log(`Found ${existingTeacherSessions.length} existing sessions for teacher ${session.userId}`);
+        }
+
+        if (shouldLog && process.env.DEBUG) {
+          console.log(`Creating new teacher session`);
         }
         
+        // Invalidate all previous sessions for this teacher in a single atomic operation
+        if (existingTeacherSessions.length > 0) {
+          console.log(`⚠️ Invalidating ${existingTeacherSessions.length} previous sessions for teacher ${session.userId}`);
+          
+          await conn.query(
+            `UPDATE sessions 
+             SET expires_at = NOW(), is_active = FALSE, data = JSON_SET(data, '$.invalidated', true)
+             WHERE user_id = ? AND role = 'teacher' AND session_id != ? AND is_active = TRUE`,
+            [session.userId, sid]
+          );
+          
+          // For debugging purposes, list the invalidated sessions
+          if (process.env.DEBUG) {
+            console.log("Invalidated sessions:", existingTeacherSessions.map(s => s.session_id).join(', '));
+          }
+        }
+        
+        // Create the new session
         await conn.query(
-          `UPDATE sessions 
-           SET data = ?, expires_at = ?, is_active = TRUE, last_activity = NOW()
-           WHERE session_id = ?`,
+          `INSERT INTO sessions (session_id, data, expires_at, user_id, role, is_active)
+           VALUES (?, ?, ?, ?, ?, TRUE)
+           ON DUPLICATE KEY UPDATE
+             data = VALUES(data),
+             expires_at = VALUES(expires_at),
+             is_active = TRUE`,
           [
+            sid,
             JSON.stringify(session),
             expiresAt,
-            sid
+            session.userId,
+            session.role
           ]
         );
         
-        // Commit transaction
+        // Commit the transaction
         await conn.commit();
         if (shouldLog) {
-          console.log("✅ Session updated");
+          console.log("✅ Session saved");
         }
         callback(null);
         return;
       }
 
-      // Count total active sessions for this user
-      const [existingActiveSessions] = await conn.query(
-        `SELECT session_id FROM sessions 
-         WHERE user_id = ? AND role = ? AND is_active = TRUE`,
-        [session.userId, session.role]
-      );
-      
-      if (shouldLog) {
-        console.log(`Found ${existingActiveSessions.length} existing active sessions for user ${session.userId}`);
-      }
-
-      // Invalidate all previous sessions for this user in a single atomic operation
-      if (existingActiveSessions.length > 0) {
-        console.log(`⚠️ IMPORTANT: Invalidating ${existingActiveSessions.length} previous sessions for user ${session.userId}`);
-        
-        // Log session IDs for debugging
-        console.log("Sessions being invalidated:", 
-          existingActiveSessions.map(s => s.session_id.substring(0, 8)).join(', ')
-        );
-        
-        await conn.query(
-          `UPDATE sessions 
-           SET expires_at = NOW(), is_active = FALSE, 
-           data = JSON_SET(data, '$.invalidated', true, '$.invalidatedAt', ?)
-           WHERE user_id = ? AND role = ? AND is_active = TRUE`,
-          [new Date().toISOString(), session.userId, session.role]
-        );
-      }
-      
-      // Create the new session
-      if (shouldLog) {
-        console.log(`Creating new session ${sid.substring(0, 8)} for user ${session.userId}`);
-      }
-      
+      // For other authenticated users (students, etc)
       await conn.query(
         `INSERT INTO sessions (session_id, data, expires_at, user_id, role, is_active)
          VALUES (?, ?, ?, ?, ?, TRUE)
@@ -185,7 +222,7 @@ class CustomMySQLStore extends Store {
         ]
       );
       
-      // Commit the transaction
+      // Commit transaction
       await conn.commit();
       if (shouldLog) {
         console.log("✅ Session saved");
