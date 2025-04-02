@@ -140,6 +140,12 @@ Object.defineProperty(app.response, 'cookie', {
     if (isProd) {
       cookieOptions.secure = true;
       cookieOptions.sameSite = 'none';
+      // Set domain to allow cross-site cookies if in production
+      // This helps with Netlify to Railway communication
+      if (req.headers.origin && req.headers.origin.includes('netlify.app')) {
+        // Don't set domain for cross-origin cookies, just ensure SameSite is none
+        console.log(`Setting cross-origin cookie for origin: ${req.headers.origin}`);
+      }
     } else if (req.headers.origin && (req.headers.origin.includes('localhost') || req.headers.origin.includes('127.0.0.1'))) {
       // Local development settings
       cookieOptions.secure = false;
