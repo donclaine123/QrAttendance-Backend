@@ -75,7 +75,7 @@ const sessionMiddleware = session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    httpOnly: true,
+    httpOnly: false, // Make visible to JS for debugging cross-origin issues
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
     // Set security based on environment
     secure: process.env.NODE_ENV === 'production', // true in production

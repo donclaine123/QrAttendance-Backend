@@ -485,6 +485,60 @@ router.get("/check-auth", async (req, res) => {
       }
     }
     
+    // Check for fallback userId in query params for when cookies aren't working
+    const fallbackUserId = req.query.userId;
+    const fallbackRole = req.query.role || 'teacher'; // Default to teacher role
+    
+    if (fallbackUserId) {
+      console.log(`Check-auth: Using fallback authentication for user ${fallbackUserId}`);
+      
+      // Look up user data from database
+      let userData = null;
+      
+      if (fallbackRole === 'teacher') {
+        const [teachers] = await db.query(
+          "SELECT id, first_name, last_name, email FROM teachers WHERE id = ?", 
+          [fallbackUserId]
+        );
+        
+        if (teachers && teachers.length > 0) {
+          userData = {
+            id: teachers[0].id,
+            role: 'teacher',
+            firstName: teachers[0].first_name,
+            lastName: teachers[0].last_name,
+            email: teachers[0].email
+          };
+        }
+      } else if (fallbackRole === 'student') {
+        const [students] = await db.query(
+          "SELECT id, first_name, last_name, email, student_id FROM students WHERE id = ?", 
+          [fallbackUserId]
+        );
+        
+        if (students && students.length > 0) {
+          userData = {
+            id: students[0].id,
+            role: 'student',
+            firstName: students[0].first_name,
+            lastName: students[0].last_name,
+            email: students[0].email,
+            student_number: students[0].student_id
+          };
+        }
+      }
+      
+      if (userData) {
+        console.log("Using fallback authentication with database validation");
+        return res.json({
+          authenticated: true,
+          user: userData,
+          fallbackAuth: true,
+          message: "Using fallback authentication (localStorage). Session cookies not working."
+        });
+      }
+    }
+    
     // Not authenticated at all
     console.log("Check-auth: No valid session found");
     return res.json({
@@ -865,13 +919,16 @@ router.post('/reauth', async (req, res) => {
         // Add a note that this session was reused
         req.session.reusedFrom = existingSession.session_id;
         
+        // Set cookie options based on environment
+        const isProd = process.env.NODE_ENV === 'production';
+        
         // Update the session cookie to match the existing session ID
         res.cookie('qr_attendance_sid', existingSession.session_id, {
           httpOnly: false, // Make it visible to JS for debugging
           path: '/',
           maxAge: 24 * 60 * 60 * 1000, // 24 hours
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
+          secure: isProd,
+          sameSite: isProd ? 'none' : 'lax'
         });
         
         console.log(`🔄 Reusing existing session: ${existingSession.session_id.substring(0, 8)}`);
@@ -947,6 +1004,16 @@ router.post('/reauth', async (req, res) => {
       
       console.log(`✅ Re-authentication successful for user ${userData.id}. Session ID:`, req.sessionID);
       
+      // Set cookie with correct options for environment
+      const isProd = process.env.NODE_ENV === 'production';
+      res.cookie('qr_attendance_sid', req.sessionID, {
+        httpOnly: false, // Make visible to JS for debugging
+        path: '/',
+        maxAge: 24 * 60 * 60 * 1000, // 24 hours
+        secure: isProd,
+        sameSite: isProd ? 'none' : 'lax'
+      });
+      
       // Return success
       return res.json({ 
         success: true,
@@ -962,6 +1029,57 @@ router.post('/reauth', async (req, res) => {
       error: error.message
     });
   }
+});
+
+// Add routes to fix cookie storage issues in browsers
+router.options('*', (req, res) => {
+  // Set CORS headers specifically for preflight requests
+  const allowedOrigins = [
+    'http://localhost:5500', 
+    'http://localhost:3000', 
+    'http://127.0.0.1:5500',
+    'https://splendorous-paprenjak-09a988.netlify.app'
+  ];
+  
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Cache-Control');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Expose-Headers', 'Set-Cookie');
+  }
+  
+  // Respond with 200 status for OPTIONS requests
+  res.status(200).end();
+});
+
+// Add a check-cookies endpoint to diagnose cookie storage issues
+router.get('/check-cookies', (req, res) => {
+  // Set a test cookie with environment-appropriate settings
+  const isProd = process.env.NODE_ENV === 'production';
+  
+  res.cookie('test_cookie', 'test_value', {
+    httpOnly: false,
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
+    maxAge: 60000 // 1 minute
+  });
+  
+  res.json({
+    success: true,
+    receivedCookies: req.cookies || {},
+    currentCookieSettings: {
+      httpOnly: false,
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax'
+    },
+    environment: {
+      isProd: isProd,
+      origin: req.headers.origin,
+      host: req.headers.host
+    }
+  });
 });
 
 module.exports = router;
