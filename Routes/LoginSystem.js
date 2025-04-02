@@ -94,21 +94,42 @@ router.post("/login", async (req, res) => {
           httpOnly: true,
           path: '/',
           maxAge: 24 * 60 * 60 * 1000, // 24 hours
-          sameSite: 'lax'
         };
         
+        // Configure cookie for the environment
+        if (process.env.NODE_ENV === 'production') {
+          cookieOptions.secure = true;
+          cookieOptions.sameSite = 'none';
+          
+          // Add domain for cross-site cookies in production
+          if (req.headers.origin) {
+            try {
+              const originUrl = new URL(req.headers.origin);
+              if (originUrl.hostname.includes('netlify.app')) {
+                cookieOptions.domain = originUrl.hostname;
+              }
+            } catch (err) {
+              console.error('Error parsing origin for cookie domain:', err);
+            }
+          }
+        } else {
+          cookieOptions.secure = false;
+          cookieOptions.sameSite = 'lax';
+        }
+        
+        console.log(`🍪 Setting session cookie with options:`, cookieOptions);
         res.cookie('qr_attendance_sid', req.sessionID, cookieOptions);
         
         // Return user data and session info
         return res.json({ 
-      success: true,
-      role,
-      user: {
-        id: user.id,
-        firstName: user.first_name,
+          success: true,
+          role,
+          user: {
+            id: user.id,
+            firstName: user.first_name,
             lastName: user.last_name,
             email: email
-      },
+          },
           sessionId: req.sessionID,
           redirect: role === 'teacher' ? '/pages/teacher-dashboard.html' : '/pages/student-dashboard.html'
         });
@@ -842,33 +863,82 @@ router.post('/reauth', async (req, res) => {
       });
     }
     
-    // Set up a new session
-    req.session.userId = userData.id;
-    req.session.role = role;
-    req.session.firstName = userData.first_name;
-    req.session.lastName = userData.last_name;
-    req.session.email = userData.email;
-    req.session.createdAt = new Date().toISOString();
-    req.session.lastActivity = new Date().toISOString();
-    
-    // Save the session
-    req.session.save(function(err) {
+    // Clear any existing session data
+    req.session.regenerate(async function(err) {
       if (err) {
-        console.error("Error saving session:", err);
+        console.error("Error regenerating session:", err);
         return res.status(500).json({ 
           success: false, 
-          message: "Session save failed", 
+          message: "Session regeneration failed", 
           error: err.message
         });
       }
       
-      console.log(`✅ Re-authentication successful for user ${userData.id}. Session ID:`, req.sessionID);
+      // Set up a new session
+      req.session.userId = userData.id;
+      req.session.role = role;
+      req.session.firstName = userData.first_name;
+      req.session.lastName = userData.last_name;
+      req.session.email = userData.email;
+      req.session.createdAt = new Date().toISOString();
+      req.session.lastActivity = new Date().toISOString();
       
-      // Return success
-      return res.json({ 
-        success: true,
-        message: "Re-authentication successful",
-        sessionId: req.sessionID
+      // Save the session
+      req.session.save(function(saveErr) {
+        if (saveErr) {
+          console.error("Error saving session:", saveErr);
+          return res.status(500).json({ 
+            success: false, 
+            message: "Session save failed", 
+            error: saveErr.message
+          });
+        }
+        
+        console.log(`✅ Re-authentication successful for user ${userData.id}. Session ID:`, req.sessionID);
+        
+        // Set cookie explicitly with correct settings
+        const cookieOptions = {
+          httpOnly: true,
+          path: '/',
+          maxAge: 24 * 60 * 60 * 1000 // 24 hours
+        };
+        
+        // Configure cookie for the environment
+        if (process.env.NODE_ENV === 'production') {
+          cookieOptions.secure = true;
+          cookieOptions.sameSite = 'none';
+          
+          // Add domain for cross-site cookies in production
+          if (req.headers.origin) {
+            try {
+              const originUrl = new URL(req.headers.origin);
+              if (originUrl.hostname.includes('netlify.app')) {
+                cookieOptions.domain = originUrl.hostname;
+              }
+            } catch (err) {
+              console.error('Error parsing origin for cookie domain:', err);
+            }
+          }
+        } else {
+          cookieOptions.secure = false;
+          cookieOptions.sameSite = 'lax';
+        }
+        
+        console.log(`🍪 Setting session cookie with options:`, cookieOptions);
+        res.cookie('qr_attendance_sid', req.sessionID, cookieOptions);
+        
+        // Return success with session info
+        return res.json({ 
+          success: true,
+          message: "Re-authentication successful",
+          sessionId: req.sessionID,
+          user: {
+            id: userData.id,
+            firstName: userData.first_name,
+            lastName: userData.last_name
+          },
+          role: role
+        });
       });
     });
   } catch (error) {

@@ -89,6 +89,8 @@ const isDev = process.env.NODE_ENV !== 'production';
 // Log only important session events in development
 if (isDev) {
   console.log("✅ Running in development mode");
+} else {
+  console.log("✅ Running in production mode");
 }
 
 // Apply session middleware
@@ -140,14 +142,42 @@ Object.defineProperty(app.response, 'cookie', {
     if (isProd) {
       cookieOptions.secure = true;
       cookieOptions.sameSite = 'none';
+      
+      // Ensure the domain is set correctly in production
+      if (!cookieOptions.domain && req.headers.origin) {
+        try {
+          // Extract domain from origin if possible
+          const originUrl = new URL(req.headers.origin);
+          if (originUrl.hostname.includes('netlify.app')) {
+            console.log(`Using domain from origin: ${originUrl.hostname}`);
+            cookieOptions.domain = originUrl.hostname;
+          }
+        } catch (err) {
+          console.error('Error parsing origin for cookie domain:', err);
+        }
+      }
     } else if (req.headers.origin && (req.headers.origin.includes('localhost') || req.headers.origin.includes('127.0.0.1'))) {
       // Local development settings
       cookieOptions.secure = false;
       cookieOptions.sameSite = 'lax';
     }
     
+    // Force specific settings for the session cookie to ensure persistence
+    if (name === 'qr_attendance_sid') {
+      if (isProd) {
+        cookieOptions.secure = true;
+        cookieOptions.sameSite = 'none';
+      } else {
+        cookieOptions.secure = false;
+        cookieOptions.sameSite = 'lax';
+      }
+      
+      // Ensure httpOnly is true for session cookies
+      cookieOptions.httpOnly = true;
+    }
+    
     // Log cookie settings for debugging
-    console.log(`🍪 Setting cookie ${name} (SameSite=${cookieOptions.sameSite}, Secure=${cookieOptions.secure})`);
+    console.log(`🍪 Setting cookie ${name} (SameSite=${cookieOptions.sameSite}, Secure=${cookieOptions.secure}, Domain=${cookieOptions.domain || 'default'})`);
     
     return originalCookie.call(this, name, value, cookieOptions);
   },
