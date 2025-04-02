@@ -834,7 +834,59 @@ router.post('/reauth', async (req, res) => {
       });
     }
     
-    console.log(`Attempting to re-authenticate user ${userId} with role ${role}`);
+    console.log(`🔄 Attempting to re-authenticate user ${userId} with role ${role}`);
+    
+    // IMPORTANT: First check for existing active sessions in the database
+    const [existingSessions] = await db.query(
+      `SELECT session_id, data FROM sessions 
+       WHERE user_id = ? AND role = ? AND is_active = TRUE
+       ORDER BY last_activity DESC LIMIT 1`,
+      [userId, role]
+    );
+    
+    // If there's already an active session, use it instead of creating a new one
+    if (existingSessions.length > 0) {
+      const existingSession = existingSessions[0];
+      console.log(`✅ Found existing active session ${existingSession.session_id.substring(0, 8)} for user ${userId}`);
+      
+      try {
+        // Parse session data
+        const sessionData = JSON.parse(existingSession.data);
+        
+        // Update our current session with data from the existing session
+        req.session.userId = userId;
+        req.session.role = role;
+        req.session.firstName = sessionData.firstName;
+        req.session.lastName = sessionData.lastName;
+        req.session.email = sessionData.email;
+        req.session.createdAt = sessionData.createdAt;
+        req.session.lastActivity = new Date().toISOString();
+        
+        // Add a note that this session was reused
+        req.session.reusedFrom = existingSession.session_id;
+        
+        // Update the session cookie to match the existing session ID
+        res.cookie('qr_attendance_sid', existingSession.session_id, {
+          httpOnly: false, // Make it visible to JS for debugging
+          path: '/',
+          maxAge: 24 * 60 * 60 * 1000, // 24 hours
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
+        });
+        
+        console.log(`🔄 Reusing existing session: ${existingSession.session_id.substring(0, 8)}`);
+        
+        return res.json({ 
+          success: true,
+          message: "Re-authenticated with existing session",
+          sessionId: existingSession.session_id,
+          reused: true
+        });
+      } catch (parseError) {
+        console.error("Error parsing existing session data:", parseError);
+        // If we can't parse the data, continue with creating a new session
+      }
+    }
     
     // Look up user data based on the provided ID and role
     let userData = null;
@@ -864,6 +916,14 @@ router.post('/reauth', async (req, res) => {
         message: "User not found" 
       });
     }
+    
+    // Clear any previous sessions for this user
+    await db.query(
+      `UPDATE sessions 
+       SET is_active = FALSE, expires_at = NOW() 
+       WHERE user_id = ? AND role = ? AND is_active = TRUE`,
+      [userId, role]
+    );
     
     // Set up a new session
     req.session.userId = userData.id;

@@ -135,25 +135,38 @@ Object.defineProperty(app.response, 'cookie', {
     
     // Determine if we're in production
     const isProd = process.env.NODE_ENV === 'production';
+    const isSessionCookie = name === 'qr_attendance_sid';
+    
+    // Log the cookie being set
+    console.log(`🍪 Setting cookie ${name} (isProd=${isProd}, isSessionCookie=${isSessionCookie})`);
     
     // Set secure and sameSite for all cookies in production
     if (isProd) {
       cookieOptions.secure = true;
       cookieOptions.sameSite = 'none';
-      // Set domain to allow cross-site cookies if in production
-      // This helps with Netlify to Railway communication
-      if (req.headers.origin && req.headers.origin.includes('netlify.app')) {
-        // Don't set domain for cross-origin cookies, just ensure SameSite is none
-        console.log(`Setting cross-origin cookie for origin: ${req.headers.origin}`);
+      
+      // Explicitly set all session cookies to be accessible from JS for debugging
+      // This is a temporary measure to debug the cookie storage issue
+      if (isSessionCookie) {
+        cookieOptions.httpOnly = false;
+        console.log(`📣 Making session cookie visible to JavaScript for debugging`);
       }
-    } else if (req.headers.origin && (req.headers.origin.includes('localhost') || req.headers.origin.includes('127.0.0.1'))) {
+      
+      // Don't set domain for cross-origin cookies to avoid domain mismatch issues
+      console.log(`Setting cross-origin cookie with options:`, cookieOptions);
+    } else {
       // Local development settings
       cookieOptions.secure = false;
       cookieOptions.sameSite = 'lax';
+      
+      // For testing, make session cookies JS-accessible in development too
+      if (isSessionCookie) {
+        cookieOptions.httpOnly = false;
+      }
     }
     
     // Log cookie settings for debugging
-    console.log(`🍪 Setting cookie ${name} (SameSite=${cookieOptions.sameSite}, Secure=${cookieOptions.secure})`);
+    console.log(`🍪 Final cookie settings: SameSite=${cookieOptions.sameSite}, Secure=${cookieOptions.secure}, HttpOnly=${cookieOptions.httpOnly}`);
     
     return originalCookie.call(this, name, value, cookieOptions);
   },
@@ -332,8 +345,68 @@ app.use((err, req, res, next) => {
 });
 
 // Start server
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
+  
+  // Clean up sessions on startup
+  try {
+    console.log('🧹 Performing initial session cleanup...');
+    
+    // Invalidate all potentially duplicated sessions
+    const [duplicateSessions] = await db.query(`
+      SELECT user_id, role, COUNT(*) as session_count
+      FROM sessions
+      WHERE is_active = TRUE
+      GROUP BY user_id, role
+      HAVING COUNT(*) > 1
+    `);
+    
+    if (duplicateSessions.length > 0) {
+      console.log(`Found ${duplicateSessions.length} users with multiple active sessions`);
+      
+      // Process each user with duplicate sessions
+      for (const user of duplicateSessions) {
+        // For each user with duplicate sessions, keep only the most recent one
+        const [cleanupResult] = await db.query(`
+          UPDATE sessions s1
+          JOIN (
+            SELECT user_id, role, MAX(last_activity) as latest
+            FROM sessions
+            WHERE user_id = ? AND role = ? AND is_active = TRUE
+            GROUP BY user_id, role
+          ) s2 ON s1.user_id = s2.user_id AND s1.role = s2.role
+          SET s1.is_active = FALSE, s1.expires_at = NOW()
+          WHERE s1.user_id = ? AND s1.role = ? 
+            AND s1.is_active = TRUE
+            AND s1.last_activity < s2.latest
+        `, [user.user_id, user.role, user.user_id, user.role]);
+        
+        console.log(`Cleaned up duplicate sessions for user ${user.user_id} (${user.role})`);
+      }
+    } else {
+      console.log('No users with duplicate sessions found.');
+    }
+    
+    // Delete expired sessions
+    const [expiredResult] = await db.query(`
+      DELETE FROM sessions 
+      WHERE expires_at < NOW() OR is_active = FALSE
+    `);
+    
+    if (expiredResult.affectedRows > 0) {
+      console.log(`Deleted ${expiredResult.affectedRows} expired sessions`);
+    }
+    
+    // Count active sessions
+    const [countResult] = await db.query(`
+      SELECT COUNT(*) as count FROM sessions WHERE is_active = TRUE
+    `);
+    
+    console.log(`Active sessions after cleanup: ${countResult[0].count}`);
+    console.log('✅ Session cleanup complete');
+  } catch (error) {
+    console.error('❌ Error during session cleanup:', error);
+  }
 }).on('error', (err) => {
   console.error('Server failed to start:', err);
   process.exit(1);
