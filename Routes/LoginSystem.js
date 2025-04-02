@@ -799,63 +799,84 @@ router.get('/test-session-store', async (req, res) => {
   }
 });
 
-// Routes
-router.post("/register", async (req, res) => {
-  const { role, email, firstName, lastName, password, studentId } = req.body;
-
+// 📌 Re-authentication endpoint to restore session from localStorage data
+router.post('/reauth', async (req, res) => {
   try {
-    // 🔹 Check if email already exists
-    const [teacherRows] = await db.query("SELECT id FROM teachers WHERE email = ?", [email]);
-    if (teacherRows.length > 0) {
-      return res.status(400).json({ success: false, message: "Email already registered as a teacher." });
+    const { userId, role } = req.body;
+    
+    if (!userId || !role) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Missing required parameters" 
+      });
     }
-
-    const [studentRows] = await db.query("SELECT id FROM students WHERE email = ?", [email]);
-    if (studentRows.length > 0) {
-      return res.status(400).json({ success: false, message: "Email already registered as a student." });
-    }
-
-    // 🔹 Hash password and generate verification token
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const verificationToken = crypto.randomBytes(32).toString("hex");
-
-    let userId;
-    if (role === "teacher") {
-      const [result] = await db.query(
-        "INSERT INTO teachers (email, password_hash, first_name, last_name, verification_token, is_verified) VALUES (?, ?, ?, ?, ?, ?)",
-        [email, hashedPassword, firstName, lastName, verificationToken, false] // Use BOOLEAN for is_verified
+    
+    console.log(`Attempting to re-authenticate user ${userId} with role ${role}`);
+    
+    // Look up user data based on the provided ID and role
+    let userData = null;
+    if (role === 'teacher') {
+      const [teachers] = await db.query(
+        "SELECT id, first_name, last_name, email FROM teachers WHERE id = ?", 
+        [userId]
       );
-      userId = result.insertId;
-    } else if (role === "student") {
-      const [result] = await db.query(
-        "INSERT INTO students (email, password_hash, first_name, last_name, student_id, verification_token, is_verified) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [email, hashedPassword, firstName, lastName, studentId, verificationToken, false]
+      
+      if (teachers && teachers.length > 0) {
+        userData = teachers[0];
+      }
+    } else if (role === 'student') {
+      const [students] = await db.query(
+        "SELECT id, first_name, last_name, email FROM students WHERE id = ?", 
+        [userId]
       );
-      userId = result.insertId;
-    } else {
-      return res.status(400).json({ success: false, message: "Invalid role" });
+      
+      if (students && students.length > 0) {
+        userData = students[0];
+      }
     }
-
-    // 🔹 Send verification email
-    const verifyUrl = `http://localhost:5000/auth/verify?token=${verificationToken}`;
-    await transporter.sendMail({
-      from: process.env.EMAIL_USER,
-      to: email,
-      subject: "Verify Your Email",
-      html: `<p>Click <a href="${verifyUrl}">VERIFY</a> to verify your email.</p>`,
+    
+    if (!userData) {
+      return res.status(401).json({ 
+        success: false, 
+        message: "User not found" 
+      });
+    }
+    
+    // Set up a new session
+    req.session.userId = userData.id;
+    req.session.role = role;
+    req.session.firstName = userData.first_name;
+    req.session.lastName = userData.last_name;
+    req.session.email = userData.email;
+    req.session.createdAt = new Date().toISOString();
+    req.session.lastActivity = new Date().toISOString();
+    
+    // Save the session
+    req.session.save(function(err) {
+      if (err) {
+        console.error("Error saving session:", err);
+        return res.status(500).json({ 
+          success: false, 
+          message: "Session save failed", 
+          error: err.message
+        });
+      }
+      
+      console.log(`✅ Re-authentication successful for user ${userData.id}. Session ID:`, req.sessionID);
+      
+      // Return success
+      return res.json({ 
+        success: true,
+        message: "Re-authentication successful",
+        sessionId: req.sessionID
+      });
     });
-
-    res.json({ 
-      success: true, 
-      message: "Registration successful! Check your email for verification.",
-      userId: userId
-    });
-  } catch (err) {
-    console.error("Registration error:", err);
+  } catch (error) {
+    console.error("Re-authentication error:", error);
     res.status(500).json({ 
       success: false, 
-      message: "Registration failed",
-      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+      message: "Re-authentication failed",
+      error: error.message
     });
   }
 });

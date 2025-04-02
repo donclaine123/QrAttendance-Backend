@@ -116,7 +116,7 @@ class CustomMySQLStore extends Store {
         // First check if this exact session already exists to avoid duplicate work
         const [existingSession] = await conn.query(
           `SELECT session_id FROM sessions 
-           WHERE session_id = ? AND user_id = ? AND role = 'teacher' AND is_active = TRUE`,
+           WHERE session_id = ? AND user_id = ? AND role = 'teacher'`,
           [sid, session.userId]
         );
         
@@ -146,17 +146,34 @@ class CustomMySQLStore extends Store {
           return;
         }
 
+        // Check for any active sessions for this teacher across all session IDs
+        const [existingTeacherSessions] = await conn.query(
+          `SELECT session_id FROM sessions 
+           WHERE user_id = ? AND role = 'teacher' AND is_active = TRUE`,
+          [session.userId]
+        );
+        
+        if (shouldLog && process.env.DEBUG) {
+          console.log(`Found ${existingTeacherSessions.length} existing sessions for teacher ${session.userId}`);
+        }
+
         if (shouldLog && process.env.DEBUG) {
           console.log(`Creating new teacher session`);
         }
         
         // Invalidate all previous sessions for this teacher in a single atomic operation
-        await conn.query(
-          `UPDATE sessions 
-           SET expires_at = NOW(), is_active = FALSE 
-           WHERE user_id = ? AND role = 'teacher' AND session_id != ? AND is_active = TRUE`,
-          [session.userId, sid]
-        );
+        if (existingTeacherSessions.length > 0) {
+          await conn.query(
+            `UPDATE sessions 
+             SET expires_at = NOW(), is_active = FALSE 
+             WHERE user_id = ? AND role = 'teacher' AND session_id != ? AND is_active = TRUE`,
+            [session.userId, sid]
+          );
+          
+          if (shouldLog && process.env.DEBUG) {
+            console.log(`Invalidated ${existingTeacherSessions.length} previous sessions`);
+          }
+        }
         
         // Create the new session
         await conn.query(
