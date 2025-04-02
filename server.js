@@ -76,7 +76,10 @@ const sessionMiddleware = session({
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    // Set security based on environment
+    secure: process.env.NODE_ENV === 'production', // true in production
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax' // none in production
   }
 });
 
@@ -130,28 +133,21 @@ Object.defineProperty(app.response, 'cookie', {
       path: '/'
     };
     
-    // Handle cross-origin cookies
-    if (req.headers.origin) {
-      const origin = req.headers.origin;
-      
-      // Handle cross-origin cases
-      if (origin && origin !== `${req.protocol}://${req.headers.host}`) {
-        // Check if we're in development mode - localhost special case
-        if (isDev && (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
-          cookieOptions.sameSite = 'lax';
-          cookieOptions.secure = false;
-        } else {
-          // Production environment or cross-origin case
-          cookieOptions.sameSite = 'none';
-          cookieOptions.secure = true;
-        }
-      }
+    // Determine if we're in production
+    const isProd = process.env.NODE_ENV === 'production';
+    
+    // Set secure and sameSite for all cookies in production
+    if (isProd) {
+      cookieOptions.secure = true;
+      cookieOptions.sameSite = 'none';
+    } else if (req.headers.origin && (req.headers.origin.includes('localhost') || req.headers.origin.includes('127.0.0.1'))) {
+      // Local development settings
+      cookieOptions.secure = false;
+      cookieOptions.sameSite = 'lax';
     }
     
-    // Log only important cookie events in development
-    if (isDev && name === 'qr_attendance_sid' && !value.includes('health')) {
-      console.log(`🍪 Setting cookie: ${name.substring(0, 15)}... (SameSite=${cookieOptions.sameSite}, Secure=${cookieOptions.secure})`);
-    }
+    // Log cookie settings for debugging
+    console.log(`🍪 Setting cookie ${name} (SameSite=${cookieOptions.sameSite}, Secure=${cookieOptions.secure})`);
     
     return originalCookie.call(this, name, value, cookieOptions);
   },
@@ -257,6 +253,37 @@ app.get('/auth/debug-cookies', (req, res) => {
         secure: false,
         sameSite: 'lax'
       }
+    }
+  });
+});
+
+// Debug headers endpoint for troubleshooting CORS issues
+app.get('/auth/debug-headers', (req, res) => {
+  // Get all headers from the request
+  const requestHeaders = req.headers;
+  
+  // Return a response with all the useful debugging info
+  res.json({
+    success: true,
+    headers: {
+      origin: req.headers.origin,
+      referer: req.headers.referer,
+      host: req.headers.host,
+      userAgent: req.headers['user-agent'],
+      contentType: req.headers['content-type'],
+      accept: req.headers.accept,
+      authorization: req.headers.authorization ? 'present' : 'not present',
+      cookieHeader: req.headers.cookie
+    },
+    cookies: req.cookies,
+    sessionID: req.sessionID,
+    session: req.session ? {
+      userId: req.session.userId,
+      role: req.session.role,
+      isAuthenticated: !!req.session.userId
+    } : 'No session',
+    env: {
+      nodeEnv: process.env.NODE_ENV || 'not set'
     }
   });
 });
