@@ -40,13 +40,7 @@ app.use(cookieParser());
 // Configure CORS with very permissive settings for development
 app.use(
   cors({
-    origin: function(origin, callback) {
-      // Allow requests with no origin (like mobile apps or curl requests)
-      if (!origin) return callback(null, true);
-      
-      // Allow all domains
-      callback(null, origin);
-    },
+    origin: ["http://localhost:5500", "http://localhost:3000", "http://127.0.0.1:5500", "https://splendorous-paprenjak-09a988.netlify.app"],
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Cache-Control"],
@@ -58,8 +52,7 @@ app.use(
 // Add CORS headers directly for more compatibility
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin) {
-    // Allow any origin that sends a request
+  if (origin && (origin.includes('localhost') || origin.includes('127.0.0.1') || origin.includes('netlify.app'))) {
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Cache-Control');
@@ -96,8 +89,6 @@ const isDev = process.env.NODE_ENV !== 'production';
 // Log only important session events in development
 if (isDev) {
   console.log("✅ Running in development mode");
-} else {
-  console.log("✅ Running in production mode");
 }
 
 // Apply session middleware
@@ -145,36 +136,18 @@ Object.defineProperty(app.response, 'cookie', {
     // Determine if we're in production
     const isProd = process.env.NODE_ENV === 'production';
     
-    // Special handling for the session cookie
-    if (name === 'qr_attendance_sid') {
-      // For session cookies, ensure they work across domains in production
-      if (isProd) {
-        cookieOptions.secure = true;
-        cookieOptions.sameSite = 'none';
-        
-        // Don't set domain for cross-site cookies as it can be more restrictive
-        delete cookieOptions.domain;
-      } else {
-        // Local development settings
-        cookieOptions.secure = false;
-        cookieOptions.sameSite = 'lax';
-      }
-      
-      // Ensure httpOnly is true for session cookies but false for debug cookies
-      cookieOptions.httpOnly = true;
-    } else {
-      // For other cookies, use the environment-specific defaults
-      if (isProd) {
-        cookieOptions.secure = true;
-        cookieOptions.sameSite = 'none';
-      } else if (req.headers.origin && (req.headers.origin.includes('localhost') || req.headers.origin.includes('127.0.0.1'))) {
-        cookieOptions.secure = false;
-        cookieOptions.sameSite = 'lax';
-      }
+    // Set secure and sameSite for all cookies in production
+    if (isProd) {
+      cookieOptions.secure = true;
+      cookieOptions.sameSite = 'none';
+    } else if (req.headers.origin && (req.headers.origin.includes('localhost') || req.headers.origin.includes('127.0.0.1'))) {
+      // Local development settings
+      cookieOptions.secure = false;
+      cookieOptions.sameSite = 'lax';
     }
     
     // Log cookie settings for debugging
-    console.log(`🍪 Setting cookie ${name} (SameSite=${cookieOptions.sameSite}, Secure=${cookieOptions.secure}, Domain=${cookieOptions.domain || 'default'}, httpOnly=${cookieOptions.httpOnly})`);
+    console.log(`🍪 Setting cookie ${name} (SameSite=${cookieOptions.sameSite}, Secure=${cookieOptions.secure})`);
     
     return originalCookie.call(this, name, value, cookieOptions);
   },

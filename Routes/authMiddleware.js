@@ -2,11 +2,6 @@ const db = require("../db");
 
 // Main authentication middleware
 const authenticate = async (req, res, next) => {
-  // Skip authentication for specific endpoints
-  if (req.path === '/login' || req.path === '/reauth') {
-    return next();
-  }
-  
   // Special handling for check-auth endpoint
   if (req.path === '/check-auth') {
     // Only log in debug mode or if no previous auth check happened
@@ -54,7 +49,12 @@ const authenticate = async (req, res, next) => {
       }
     }
     
-    return res.json({ authenticated: false, message: "No valid session found" });
+    return res.json({ authenticated: false });
+  }
+  
+  // Skip authentication checks for login path
+  if (req.path === '/login') {
+    return next();
   }
   
   // Only log auth once per request to reduce duplicate output
