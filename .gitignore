@@ -1,47 +1,18 @@
-# Environment variables
+.env.local
+.env.development
+.env.production
 .env
-.env.*
-!.env.example
 
-# Dependencies
-/node_modules
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+# .env.development (SAFE to commit example to Git)
+DB_HOST=ballast.proxy.rlwy.net
+DB_PORT=41598
+DB_USER=root
+DB_PASS=eeTleYrVkuySVTZhAhufStCnqepMFonE
+DB_NAME=railway
+DB_URL = mysql://root:AogwvkxpZeHQKYLMXQgsgfQbyWLAwQgV@interchange.proxy.rlwy.net:40387/railway
+EMAIL_USER=genshin111303@gmail.com
+EMAIL_PASS=lcfxafldqpfvoqak
 
-# Runtime data
-pids
-*.pid
-*.seed
-*.pid.lock
-
-# Logs
-logs
-*.log
-
-# IDE and editor files
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Build output
-/dist
-/build
-
-# Testing
-/coverage
-
-# Temporary files
-*.tmp
-*.temp
+SESSION_SECRET=your_strong_secret_here
+SESSION_TABLE=user_sessions
+SESSION_LIFETIME=86400000 # 24h in ms

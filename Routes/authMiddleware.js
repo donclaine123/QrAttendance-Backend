@@ -267,7 +267,7 @@ const authenticate = async (req, res, next) => {
       sessionCreated: sessions[0].created_at,
       lastActivity: sessions[0].last_activity
     };
-
+    
     next();
   } catch (error) {
     console.error("❌ AUTH ERROR:", error);

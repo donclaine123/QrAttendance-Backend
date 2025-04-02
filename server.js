@@ -10,8 +10,6 @@ const CustomMySQLStore = require('./Routes/CustomSessionStore');
 const qrSystem = require("./Routes/QrSystem");
 const crypto = require('crypto');
 
-// Check if we're in development or production
-const isDev = process.env.NODE_ENV !== 'production';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -39,15 +37,10 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// Configure CORS with production settings
+// Configure CORS with very permissive settings for development
 app.use(
   cors({
-    origin: [
-      "http://localhost:5500", 
-      "http://localhost:3000", 
-      "http://127.0.0.1:5500",
-      "https://splendorous-paprenjak-09a988.netlify.app"
-    ],
+    origin: ["http://localhost:5500", "http://localhost:3000", "http://127.0.0.1:5500", "https://splendorous-paprenjak-09a988.netlify.app"],
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Cache-Control"],
@@ -59,11 +52,7 @@ app.use(
 // Add CORS headers directly for more compatibility
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin && (
-    origin.includes('localhost') || 
-    origin.includes('127.0.0.1') || 
-    origin === 'https://splendorous-paprenjak-09a988.netlify.app'
-  )) {
+  if (origin && (origin.includes('localhost') || origin.includes('127.0.0.1') || origin === 'https://splendorous-paprenjak-09a988.netlify.app')) {
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Cache-Control');
@@ -87,13 +76,12 @@ const sessionMiddleware = session({
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production', // Enable secure in production
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // Proper SameSite for cross-origin in production
-    maxAge: parseInt(process.env.SESSION_LIFETIME) || 24 * 60 * 60 * 1000, // Use env variable or default to 24 hours
-    path: '/'
-  },
-  name: 'qr_attendance_sid' // Consistent cookie name
+    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+  }
 });
+
+// Check if we're in development or production
+const isDev = process.env.NODE_ENV !== 'production';
 
 // Log only important session events in development
 if (isDev) {
@@ -153,6 +141,7 @@ Object.defineProperty(app.response, 'cookie', {
           cookieOptions.sameSite = 'lax';
           cookieOptions.secure = false;
         } else {
+          // Production environment or cross-origin case
           cookieOptions.sameSite = 'none';
           cookieOptions.secure = true;
         }
@@ -278,51 +267,10 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal Server Error' });
 });
 
-// Start server with proper error handling
+// Start server
 const server = app.listen(PORT, () => {
-  console.log(`
-🚀 Server is running in ${process.env.NODE_ENV} mode
-📡 Listening on port ${PORT}
-🔗 Frontend URL: ${process.env.FRONTEND_URL}
-🌐 API URL: ${process.env.API_URL}
-  `);
-});
-
-// Handle server errors
-server.on('error', (error) => {
-  if (error.syscall !== 'listen') {
-    throw error;
-  }
-
-  const bind = typeof PORT === 'string'
-    ? 'Pipe ' + PORT
-    : 'Port ' + PORT;
-
-  // Handle specific listen errors with friendly messages
-  switch (error.code) {
-    case 'EACCES':
-      console.error(bind + ' requires elevated privileges');
-      process.exit(1);
-      break;
-    case 'EADDRINUSE':
-      console.error(bind + ' is already in use');
-      process.exit(1);
-      break;
-    default:
-      throw error;
-  }
-});
-
-// Handle unhandled promise rejections
-process.on('unhandledRejection', (err) => {
-  console.error('Unhandled Promise Rejection:', err);
-});
-
-// Handle uncaught exceptions
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
-  // Give the server time to finish current requests
-  server.close(() => {
-    process.exit(1);
-  });
+  console.log(`🚀 Server running on port ${PORT}`);
+}).on('error', (err) => {
+  console.error('Server failed to start:', err);
+  process.exit(1);
 });
