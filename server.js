@@ -45,11 +45,12 @@ app.use(
         "http://localhost:5500", 
         "http://localhost:3000", 
         "http://127.0.0.1:5500", 
-        "https://splendorous-paprenjak-09a988.netlify.app"
+        "https://splendorous-paprenjak-09a988.netlify.app",
+        "https://qrcode-attendance.netlify.app" // Generic netlify domain
       ];
       
       // Allow requests with no origin (like mobile apps, curl, etc)
-      if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      if (!origin || allowedOrigins.indexOf(origin) !== -1 || origin.includes('netlify.app')) {
         callback(null, origin);
       } else {
         console.log(`Origin ${origin} not allowed by CORS`);

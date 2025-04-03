@@ -57,7 +57,21 @@ router.post("/generate-qr", authenticate, requireRole('teacher'), async (req, re
     console.log(`QR session created: ${session_id} for class ${class_id}, expires at ${expiresAtUTC8}`);
     
     // Build the QR code URL (this would be scanned by students)
-    const baseUrl = req.protocol + "://" + req.get("host");
+    let baseUrl;
+    
+    // Check for specific headers that might indicate the frontend URL
+    const frontendUrl = req.headers['x-forwarded-host'] || req.headers.origin;
+    
+    if (frontendUrl && frontendUrl.includes('netlify.app')) {
+      // Use the Netlify URL as the base
+      baseUrl = frontendUrl.startsWith('http') ? frontendUrl : `https://${frontendUrl}`;
+      console.log(`Using frontend URL from headers: ${baseUrl}`);
+    } else {
+      // Fallback to the backend URL
+      baseUrl = req.protocol + "://" + req.get("host");
+      console.log(`Using backend URL as fallback: ${baseUrl}`);
+    }
+    
     const qrCodeUrl = `${baseUrl}/attend?session=${session_id}&teacher=${teacher_id}&subject=${encodeURIComponent(subject || '')}`;
     
     return res.json({
