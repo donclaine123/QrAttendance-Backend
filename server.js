@@ -9,6 +9,10 @@ const session = require('express-session');
 const CustomMySQLStore = require('./Routes/CustomSessionStore');
 const qrSystem = require("./Routes/QrSystem");
 const crypto = require('crypto');
+const morgan = require('morgan');
+const path = require('path');
+const fs = require('fs');
+const rateLimit = require('express-rate-limit');
 
 
 const app = express();
@@ -196,6 +200,17 @@ process.on('SIGTERM', () => {
   }
 });
 
+// Enforce database-level session uniqueness
+async function setupSingleSessionEnforcement() {
+  try {
+    // Apply database-level constraints to ensure only one active session per user
+    await db.enforceUniqueActiveSessions();
+    console.log("✅ Single session enforcement configured");
+  } catch (error) {
+    console.error("❌ Failed to configure single session enforcement:", error);
+  }
+}
+
 // Session cleanup routine
 async function cleanupExpiredSessions() {
   try {
@@ -260,135 +275,17 @@ async function cleanupExpiredSessions() {
   setTimeout(cleanupExpiredSessions, 30 * 60 * 1000); // Every 30 minutes
 }
 
-// Add function to clean up duplicate sessions on startup
-async function cleanupDuplicateSessions() {
-  try {
-    console.log("🧹 Starting cleanup of duplicate sessions...");
-    
-    // First, invalidate all sessions that have expired
-    const [expiredResult] = await db.query(`
-      UPDATE sessions 
-      SET is_active = FALSE
-      WHERE expires_at < NOW() AND is_active = TRUE
-    `);
-    
-    if (expiredResult.affectedRows > 0) {
-      console.log(`Invalidated ${expiredResult.affectedRows} expired sessions`);
-    }
-    
-    // Find all users with multiple active sessions
-    const [users] = await db.query(`
-      SELECT user_id, role, COUNT(*) as session_count 
-      FROM sessions 
-      WHERE is_active = TRUE 
-      GROUP BY user_id, role 
-      HAVING COUNT(*) > 1
-    `);
-    
-    console.log(`Found ${users.length} users with multiple active sessions`);
-    
-    let totalInvalidated = 0;
-    
-    for (const user of users) {
-      console.log(`User ${user.user_id} (${user.role}) has ${user.session_count} active sessions`);
-      
-      // Get all sessions for this user
-      const [sessions] = await db.query(`
-        SELECT session_id, created_at, last_activity
-        FROM sessions
-        WHERE user_id = ? AND role = ? AND is_active = TRUE
-        ORDER BY last_activity DESC, created_at DESC
-      `, [user.user_id, user.role]);
-      
-      if (sessions.length > 1) {
-        // Keep only the newest session based on last activity time
-        const keepSessionId = sessions[0].session_id;
-        const sessionsToInvalidate = sessions.slice(1).map(s => s.session_id);
-        
-        console.log(`Keeping most recent session ${keepSessionId} (last activity: ${sessions[0].last_activity})`);
-        console.log(`Invalidating ${sessionsToInvalidate.length} older sessions`);
-        
-        if (sessionsToInvalidate.length > 0) {
-          // Log the sessions being invalidated
-          sessions.slice(1).forEach((s, idx) => {
-            console.log(`  Session ${idx+1}: ${s.session_id} (created: ${s.created_at}, last activity: ${s.last_activity})`);
-          });
-          
-          // Invalidate older sessions
-          const [updateResult] = await db.query(`
-            UPDATE sessions
-            SET is_active = FALSE, expires_at = NOW()
-            WHERE session_id IN (?)
-          `, [sessionsToInvalidate]);
-          
-          totalInvalidated += updateResult.affectedRows;
-          console.log(`Successfully invalidated ${updateResult.affectedRows} sessions`);
-        }
-      }
-    }
-    
-    console.log(`🧹 Session cleanup complete. Total invalidated: ${totalInvalidated}`);
-    
-    // Count remaining active sessions
-    const [countResult] = await db.query(
-      `SELECT COUNT(*) AS total FROM sessions WHERE is_active = TRUE`
-    );
-    
-    if (countResult[0]?.total > 0) {
-      console.log(`ℹ️ Current active sessions: ${countResult[0].total}`);
-    }
-    
-    // Run another verification to ensure each user has only one active session
-    const [duplicateCheck] = await db.query(`
-      SELECT user_id, role, COUNT(*) as session_count 
-      FROM sessions 
-      WHERE is_active = TRUE 
-      GROUP BY user_id, role 
-      HAVING COUNT(*) > 1
-    `);
-    
-    if (duplicateCheck.length > 0) {
-      console.log(`⚠️ Warning: Still found ${duplicateCheck.length} users with multiple sessions after cleanup`);
-      // Force cleanup again with more aggressive approach if needed
-      for (const user of duplicateCheck) {
-        console.log(`Force cleanup for user ${user.user_id} (${user.role})`);
-        
-        // Get the most recently active session
-        const [mostRecent] = await db.query(`
-          SELECT session_id FROM sessions
-          WHERE user_id = ? AND role = ? AND is_active = TRUE
-          ORDER BY last_activity DESC, created_at DESC
-          LIMIT 1
-        `, [user.user_id, user.role]);
-        
-        if (mostRecent.length > 0) {
-          const keepId = mostRecent[0].session_id;
-          
-          // Force invalidate ALL other sessions for this user
-          await db.query(`
-            UPDATE sessions 
-            SET is_active = FALSE, expires_at = NOW()
-            WHERE user_id = ? AND role = ? AND session_id != ? AND is_active = TRUE
-          `, [user.user_id, user.role, keepId]);
-          
-          console.log(`Forced cleanup complete for user ${user.user_id}`);
-        }
-      }
-    } else {
-      console.log(`✅ Verification complete: Each user has at most one active session`);
-    }
-  } catch (error) {
-    console.error('❌ Error cleaning up sessions:', error);
-  }
+// Combine session cleanup functions
+async function setupSessionManagement() {
+  // Setup database-level enforcement of unique sessions
+  await setupSingleSessionEnforcement();
+  
+  // Run initial cleanup
+  await cleanupExpiredSessions();
+  
+  // Schedule regular cleanup
+  console.log("✅ Session management initialized");
 }
-
-// Run cleanup on server startup
-console.log("Running session cleanup on startup...");
-cleanupExpiredSessions().then(() => {
-  cleanupDuplicateSessions().then(() => {
-    console.log("Initial session cleanup completed");
-  });
-});
 
 // Add function to completely reset all sessions for a user
 async function resetAllSessionsForUser(userId, role) {
@@ -571,9 +468,12 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal Server Error' });
 });
 
-// Start server
-const server = app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+// Start the server
+app.listen(PORT, async () => {
+  console.log(`Server running on port ${PORT}`);
+  
+  // Initialize session management
+  await setupSessionManagement();
 }).on('error', (err) => {
   console.error('Server failed to start:', err);
   process.exit(1);
