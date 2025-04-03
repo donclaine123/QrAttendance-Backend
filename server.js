@@ -90,7 +90,7 @@ const sessionMiddleware = session({
   store: sessionStore,
   resave: false,
   saveUninitialized: false,
-  rolling: false, // Prevent session from being saved on every request
+  rolling: false,
   cookie: {
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
@@ -99,23 +99,56 @@ const sessionMiddleware = session({
   }
 });
 
-// Add session collision protection and prevent new session creation for auth checks
-app.use((req, res, next) => {
+// Session handling middleware
+app.use(async (req, res, next) => {
   // Skip session for OPTIONS requests
   if (req.method === 'OPTIONS') {
     return next();
   }
 
-  // Don't create new sessions for auth checks or static resources
-  if ((req.path.includes('/auth/check-auth') || req.path.includes('/static/')) && !req.cookies.qr_attendance_sid) {
+  // Skip session for static resources and health checks
+  if (req.path.includes('/static/') || req.path.includes('/health') || req.path.includes('/favicon')) {
     return next();
   }
 
-  // Only create new sessions for login or if a valid cookie exists
-  if (!req.cookies.qr_attendance_sid && req.path !== '/auth/login') {
+  // Check if there's an existing session cookie
+  const sessionId = req.cookies.qr_attendance_sid;
+
+  if (sessionId) {
+    try {
+      // Check if this session exists and is active in the database
+      const [sessions] = await db.query(
+        `SELECT * FROM sessions 
+         WHERE session_id = ? AND is_active = TRUE AND expires_at > NOW()`,
+        [sessionId]
+      );
+
+      if (sessions.length > 0) {
+        // Valid session exists, update last activity
+        await db.query(
+          `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
+          [sessionId]
+        );
+      } else if (req.path !== '/auth/login') {
+        // Invalid session but not a login request - clear the cookie
+        res.clearCookie('qr_attendance_sid', {
+          path: '/',
+          httpOnly: true,
+          secure: true,
+          sameSite: 'none'
+        });
+      }
+    } catch (error) {
+      console.error('Error checking session:', error);
+    }
+  }
+
+  // Only create new sessions for login or if a valid session cookie exists
+  if (!sessionId && req.path !== '/auth/login') {
     return next();
   }
 
+  // Apply session middleware
   sessionMiddleware(req, res, next);
 });
 
@@ -208,13 +241,13 @@ process.on('SIGTERM', () => {
 // Session cleanup routine
 async function cleanupExpiredSessions() {
   try {
-    // Delete any sessions that have expired
+    // Only delete sessions that have actually expired
     const [deleteResult] = await db.query(
-      `DELETE FROM sessions WHERE expires_at < NOW() OR is_active = FALSE`
+      `DELETE FROM sessions WHERE expires_at < NOW()`
     );
     
     if (deleteResult.affectedRows > 0) {
-      console.log(`🧹 Cleaned up ${deleteResult.affectedRows} expired/inactive sessions`);
+      console.log(`🧹 Cleaned up ${deleteResult.affectedRows} expired sessions`);
     }
     
     // Check for duplicate active sessions for the same user (keep only the newest)
@@ -227,46 +260,29 @@ async function cleanupExpiredSessions() {
     `);
     
     for (const user of duplicateUsers) {
-      console.log(`⚠️ Found ${user.session_count} duplicate sessions for user ${user.user_id} (${user.role})`);
-      
-      // Get all sessions for this user, ordered by created_at
+      // Get all sessions for this user, ordered by last activity
       const [userSessions] = await db.query(`
-        SELECT session_id, created_at
+        SELECT session_id, created_at, last_activity
         FROM sessions
         WHERE user_id = ? AND role = ? AND is_active = TRUE
-        ORDER BY created_at DESC
+        ORDER BY last_activity DESC, created_at DESC
       `, [user.user_id, user.role]);
       
-      // Keep only the newest session
       if (userSessions.length > 1) {
         const keepSessionId = userSessions[0].session_id;
         const sessionsToInvalidate = userSessions.slice(1).map(s => s.session_id);
         
-        console.log(`Keeping session ${keepSessionId}, invalidating ${sessionsToInvalidate.length} sessions`);
-        
-        // Invalidate all but the newest session
+        // Invalidate all but the most recently active session
         await db.query(`
           UPDATE sessions
-          SET is_active = FALSE, expires_at = NOW()
+          SET is_active = FALSE
           WHERE session_id IN (?)
         `, [sessionsToInvalidate]);
       }
     }
-    
-    // Count remaining sessions
-    const [countResult] = await db.query(
-      `SELECT COUNT(*) AS total FROM sessions WHERE is_active = TRUE`
-    );
-    
-    if (countResult[0]?.total > 0) {
-      console.log(`ℹ️ Current active sessions: ${countResult[0].total}`);
-    }
   } catch (error) {
     console.error('❌ Error cleaning up sessions:', error);
   }
-  
-  // Schedule next cleanup
-  setTimeout(cleanupExpiredSessions, 30 * 60 * 1000); // Every 30 minutes
 }
 
 // Add function to clean up duplicate sessions on startup

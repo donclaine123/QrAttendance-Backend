@@ -447,29 +447,47 @@ router.get("/verify", async (req, res) => {
 // 📌 Update check-auth endpoint
 router.get('/check-auth', async (req, res) => {
   try {
-    // First check if we have a valid session
-    if (req.session && req.session.userId && req.session.role) {
-      // Session exists, verify it in the database
+    const sessionId = req.cookies.qr_attendance_sid;
+
+    // First check if we have a valid session cookie
+    if (sessionId) {
+      // Verify the session in the database
       const [sessions] = await db.query(
-        'SELECT * FROM sessions WHERE session_id = ? AND is_active = TRUE AND expires_at > NOW()',
-        [req.sessionID]
+        `SELECT * FROM sessions 
+         WHERE session_id = ? AND is_active = TRUE AND expires_at > NOW()`,
+        [sessionId]
       );
 
       if (sessions.length > 0) {
-        // Valid session found
+        const sessionData = JSON.parse(sessions[0].data);
+        
+        // Update last activity
+        await db.query(
+          `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
+          [sessionId]
+        );
+
         return res.json({
           authenticated: true,
           user: {
-            id: req.session.userId,
-            role: req.session.role,
-            firstName: req.session.firstName,
-            lastName: req.session.lastName
+            id: sessions[0].user_id,
+            role: sessions[0].role,
+            firstName: sessionData.firstName,
+            lastName: sessionData.lastName
           }
+        });
+      } else {
+        // Invalid session - clear the cookie
+        res.clearCookie('qr_attendance_sid', {
+          path: '/',
+          httpOnly: true,
+          secure: true,
+          sameSite: 'none'
         });
       }
     }
 
-    // No valid session found, check headers as fallback
+    // If we reach here, check headers as absolute last resort
     const userId = req.headers['x-user-id'];
     const userRole = req.headers['x-user-role'];
 
@@ -478,25 +496,27 @@ router.get('/check-auth', async (req, res) => {
       const [sessions] = await db.query(
         `SELECT * FROM sessions 
          WHERE user_id = ? AND role = ? AND is_active = TRUE AND expires_at > NOW()
-         ORDER BY created_at DESC LIMIT 1`,
+         ORDER BY last_activity DESC, created_at DESC LIMIT 1`,
         [userId, userRole]
       );
 
       if (sessions.length > 0) {
-        // Use the existing session instead of creating a new one
         const sessionData = JSON.parse(sessions[0].data);
         
-        // Update the session in express without creating a new one
-        req.session.userId = sessionData.userId;
-        req.session.role = sessionData.role;
-        req.session.firstName = sessionData.firstName;
-        req.session.lastName = sessionData.lastName;
-        
+        // Set the cookie to the existing session
+        res.cookie('qr_attendance_sid', sessions[0].session_id, {
+          httpOnly: true,
+          secure: true,
+          sameSite: 'none',
+          path: '/',
+          maxAge: 24 * 60 * 60 * 1000 // 24 hours
+        });
+
         return res.json({
           authenticated: true,
           user: {
-            id: sessionData.userId,
-            role: sessionData.role,
+            id: sessions[0].user_id,
+            role: sessions[0].role,
             firstName: sessionData.firstName,
             lastName: sessionData.lastName
           }
@@ -504,7 +524,7 @@ router.get('/check-auth', async (req, res) => {
       }
     }
 
-    // No valid session or headers found
+    // No valid session found
     res.json({
       authenticated: false,
       message: "Session expired. Please log in again."
