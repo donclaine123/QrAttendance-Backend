@@ -146,8 +146,8 @@ router.post("/login", async (req, res) => {
           httpOnly: true,
           path: '/',
           maxAge: 24 * 60 * 60 * 1000, // 24 hours
-          secure: true, // Always true for HTTPS
-          sameSite: 'none' // Required for cross-origin
+          secure: isProd, // true in production
+          sameSite: isProd ? 'none' : 'lax' // 'none' in production
         };
         
         // Log cookie settings for debugging
@@ -160,17 +160,6 @@ router.post("/login", async (req, res) => {
         
         res.cookie('qr_attendance_sid', req.sessionID, cookieOptions);
         
-        // Create a cross-origin-friendly authentication token
-        // This will be used as fallback when cookies don't work
-        const authToken = {
-          userId: user.id,
-          role: role,
-          firstName: user.first_name,
-          lastName: user.last_name,
-          email: email,
-          sessionId: req.sessionID
-        };
-        
         // Return user data and session info
         return res.json({ 
       success: true,
@@ -181,10 +170,6 @@ router.post("/login", async (req, res) => {
             lastName: user.last_name,
             email: email
       },
-          // Include these fields for localStorage authentication
-          userId: user.id,
-          userRole: role,
-          authToken: authToken,
           sessionId: req.sessionID,
           redirect: role === 'teacher' ? '/pages/teacher-dashboard.html' : '/pages/student-dashboard.html'
         });
@@ -204,60 +189,48 @@ router.post("/login", async (req, res) => {
 router.post('/logout', async (req, res) => {
   console.log('Logout requested - Session ID:', req.sessionID);
   
-  try {
   if (req.session) {
-      // IMPORTANT: Capture user info and session ID BEFORE destroying session
+    // Capture user info and session ID for database deletion
     const userId = req.session.userId;
     const role = req.session.role;
-      const sessionId = req.sessionID;
-      
-      console.log(`Logging out user ${userId} (${role}) with session ${sessionId}`);
-      
-      // First, mark the session as inactive in the database
-      try {
-        await db.query(
-          'UPDATE sessions SET is_active = FALSE, expires_at = NOW() WHERE session_id = ?', 
-          [sessionId]
-        );
-        console.log(`Session ${sessionId} marked as inactive in database`);
-      } catch (dbError) {
-        console.error('Error updating session in database:', dbError);
-        // Continue with logout even if this fails
-      }
-      
-      // Now destroy the session in Express
-      await new Promise((resolve, reject) => {
+    const sessionId = req.sessionID; // Store session ID before destroying
+    // Destroy the session
+    await new Promise((resolve, reject) => {
     req.session.destroy(err => {
       if (err) {
         console.error('Session destruction error:', err);
-            reject(err);
-          } else {
-            console.log(`Express session destroyed for user ${userId}`);
-            resolve();
-          }
-        });
+          reject(err);
+        } else {
+          resolve();
+        }
       });
-      
-      // Clear the cookie with proper options for production/development
-      const isProd = process.env.NODE_ENV === 'production';
-      const cookieOptions = {
+    });
+    
+    console.log(`✅ Session destroyed for user ${userId} (${role})`);
+    
+    // Clear the cookie with proper options for production/development
+    const isProd = process.env.NODE_ENV === 'production';
+    const cookieOptions = {
         path: '/',
-        httpOnly: true,
-        secure: isProd,
-        sameSite: isProd ? 'none' : 'lax'
-      };
-      
-      console.log(`Clearing cookie with options:`, cookieOptions);
-      res.clearCookie('qr_attendance_sid', cookieOptions);
-      
-      // Finally, try to completely delete the session from the database
-      try {
-        await db.query('DELETE FROM sessions WHERE session_id = ?', [sessionId]);
-        console.log(`Session ${sessionId} successfully deleted from database`);
-      } catch (deleteError) {
-        console.error('Error deleting session from database:', deleteError);
-        // Already marked as inactive, so this isn't critical
-      }
+      httpOnly: true,
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax'
+    };
+    
+    console.log(`Clearing cookie with options:`, cookieOptions);
+    
+    // Clear both cookie domains to ensure it's properly removed
+    res.clearCookie('qr_attendance_sid', cookieOptions);
+    
+    // Delete from the database directly to ensure it's gone
+    try {
+      console.log(`Deleting session ${sessionId} from database`);
+      await db.query('DELETE FROM sessions WHERE session_id = ?', [sessionId]);
+      console.log(`Session successfully deleted from database`);
+    } catch (dbError) {
+      console.error('Error deleting session from database:', dbError);
+      // Non-critical error, continue
+    }
       
       return res.json({
         success: true,
@@ -268,14 +241,6 @@ router.post('/logout', async (req, res) => {
     res.json({
       success: true,
       message: 'Already logged out'
-      });
-    }
-  } catch (error) {
-    console.error('Logout error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error during logout',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
@@ -482,97 +447,320 @@ router.get("/verify", async (req, res) => {
 // 📌 Update check-auth endpoint
 router.get("/check-auth", async (req, res) => {
   try {
-    // APPROACH 1: Check for session data (cookie-based)
+    console.log("Check-auth request - Session ID:", req.sessionID);
+    console.log("Check-auth request - Cookies:", req.headers.cookie || 'none');
+    
+    // For debugging
+    if (req.headers['x-user-id'] || req.headers['x-user-role']) {
+      console.log("Check-auth request - Headers:", {
+        'x-user-id': req.headers['x-user-id'] || 'not set',
+        'x-user-role': req.headers['x-user-role'] || 'not set'
+      });
+    }
+    
+    // STEP 1: First try to get the session from req.session (express-session)
     if (req.session && req.session.userId && req.session.role) {
-      // Get more user info from the database
-      let tableName = req.session.role === 'teacher' ? 'teachers' : 'students';
+      console.log("Check-auth: Session authenticated via express-session, ID:", req.sessionID);
       
-      const [users] = await db.query(
-        `SELECT id, email, first_name, last_name FROM ${tableName} WHERE id = ?`,
-        [req.session.userId]
-      );
+      // Extract user information from session
+      const role = req.session.role;
+      const userId = req.session.userId;
       
-      const user = users[0];
+      let userData = {
+        id: userId,
+        role: role,
+        firstName: req.session.firstName,
+        lastName: req.session.lastName
+      };
       
-      if (user) {
-        console.log(`User authenticated via session: ${user.id}, role: ${req.session.role}`);
+      // Get additional user info from database if needed
+      if (role === 'teacher') {
+        const [teacherRows] = await db.query(
+          "SELECT email FROM teachers WHERE id = ?", 
+          [userId]
+        );
         
-        // Update session's last activity
-        try {
-          await db.query(
-            `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
-            [req.sessionID]
-          );
-        } catch (updateError) {
-          console.error("Error updating session last activity:", updateError);
+        if (teacherRows && teacherRows.length > 0) {
+          userData.email = teacherRows[0].email;
         }
+      } else if (role === 'student') {
+        const [studentRows] = await db.query(
+          "SELECT email, student_id FROM students WHERE id = ?", 
+          [userId]
+        );
         
-        return res.json({
-          authenticated: true,
-          user: {
-            id: user.id,
-            email: user.email,
-            firstName: user.first_name,
-            lastName: user.last_name,
-            role: req.session.role
-          },
-          sessionID: req.sessionID,
-          authMethod: 'session'
-        });
+        if (studentRows && studentRows.length > 0) {
+          userData.email = studentRows[0].email;
+          userData.studentId = studentRows[0].student_id;
+        }
+      }
+      
+      // Update session activity in the database
+      try {
+        await db.query(
+          "UPDATE sessions SET last_activity = NOW() WHERE session_id = ?",
+          [req.sessionID]
+        );
+      } catch (dbError) {
+        console.error("Error updating session activity:", dbError);
+        // Non-critical error, continue
+      }
+      
+      // Keep using the same session ID - don't create a new one
+      return res.json({
+        authenticated: true,
+        user: userData,
+        sessionID: req.sessionID,
+        authMethod: "express-session"
+      });
+    }
+    
+    // STEP 2: Try to get the session from the session cookie directly
+    const sessionCookie = req.cookies?.qr_attendance_sid || (req.headers.cookie || '')
+      .split(';')
+      .map(c => c.trim())
+      .find(c => c.startsWith('qr_attendance_sid='))
+      ?.split('=')[1];
+    
+    if (sessionCookie) {
+      console.log(`Found session cookie: ${sessionCookie}`);
+      
+      // Check if this session exists in the database
+      try {
+        const [sessionRows] = await db.query(
+          "SELECT * FROM sessions WHERE session_id = ? AND expires_at > NOW() AND is_active = TRUE", 
+          [sessionCookie]
+        );
+        
+        if (sessionRows && sessionRows.length > 0) {
+          console.log(`Session found in database: ${sessionCookie}`);
+          
+          // Use the user_id and role from the verified session
+          const userId = sessionRows[0].user_id;
+          const role = sessionRows[0].role;
+          
+          // Get user details from database
+          let userData = {
+            id: userId,
+            role: role
+          };
+          
+          // Get additional info based on role
+          if (role === 'teacher') {
+            const [teacherRows] = await db.query(
+              "SELECT first_name, last_name, email FROM teachers WHERE id = ?", 
+              [userId]
+            );
+            
+            if (teacherRows.length > 0) {
+              userData.firstName = teacherRows[0].first_name;
+              userData.lastName = teacherRows[0].last_name;
+              userData.email = teacherRows[0].email;
+            }
+          } else if (role === 'student') {
+            const [studentRows] = await db.query(
+              "SELECT first_name, last_name, email, student_id FROM students WHERE id = ?", 
+              [userId]
+            );
+            
+            if (studentRows.length > 0) {
+              userData.firstName = studentRows[0].first_name;
+              userData.lastName = studentRows[0].last_name;
+              userData.email = studentRows[0].email;
+              userData.studentId = studentRows[0].student_id;
+            }
+          }
+          
+          // Ensure the session is attached to the request
+          req.session.userId = userId;
+          req.session.role = role;
+          req.session.firstName = userData.firstName;
+          req.session.lastName = userData.lastName;
+          
+          // Update session activity
+          await db.query(
+            "UPDATE sessions SET last_activity = NOW() WHERE session_id = ?",
+            [sessionCookie]
+          );
+          
+          console.log(`Session authentication successful for user ${userId} (${role})`);
+          
+          // Use the EXISTING session ID - don't create a new one!
+          return res.json({
+            authenticated: true,
+            user: userData,
+            sessionID: sessionCookie,
+            authMethod: "session"
+          });
+        } else {
+          console.log(`Session cookie ${sessionCookie} not found in database or expired`);
+        }
+      } catch (dbError) {
+        console.error("Error checking session in database:", dbError);
       }
     }
     
-    // APPROACH 2: Check for header-based authentication (for cross-origin or cookie-blocked scenarios)
-    const userId = req.headers['x-user-id'];
-    const userRole = req.headers['x-user-role'];
+    // STEP 3: As last resort, try header-based authentication
+    const headerUserId = req.headers['x-user-id'];
+    const headerUserRole = req.headers['x-user-role'];
     
-    if (userId && userRole) {
-      let tableName = userRole === 'teacher' ? 'teachers' : 'students';
+    if (headerUserId && headerUserRole) {
+      console.log(`Header auth received: User ${headerUserId} (${headerUserRole})`);
       
-      const [users] = await db.query(
-        `SELECT id, email, first_name, last_name FROM ${tableName} WHERE id = ?`,
-        [userId]
-      );
-      
-      const user = users[0];
-      
-      if (user) {
-        console.log(`User authenticated via headers: ${user.id}, role: ${userRole}`);
-        
+      // Skip header auth if cookie exists but is invalid - prevents creating duplicate sessions
+      if (sessionCookie) {
+        console.log("Skipping header auth because session cookie exists but is invalid");
         return res.json({
-          authenticated: true,
-          user: {
-            id: user.id,
-            email: user.email,
-            firstName: user.first_name,
-            lastName: user.last_name,
-            role: userRole
-          },
-          authMethod: 'header'
+          authenticated: false,
+          message: "Session expired. Please log in again."
         });
+      }
+      
+      const userId = parseInt(headerUserId);
+      const role = headerUserRole;
+      
+      // Get user details from database
+      let userData = null;
+      
+      if (role === 'teacher') {
+        const [teacherRows] = await db.query(
+          "SELECT id, email, first_name, last_name FROM teachers WHERE id = ?", 
+          [userId]
+        );
+        
+        if (teacherRows && teacherRows.length > 0) {
+          userData = {
+            id: teacherRows[0].id,
+            role: 'teacher',
+            firstName: teacherRows[0].first_name,
+            lastName: teacherRows[0].last_name,
+            email: teacherRows[0].email
+          };
+        }
+      } else if (role === 'student') {
+        const [studentRows] = await db.query(
+          "SELECT id, email, first_name, last_name, student_id FROM students WHERE id = ?", 
+          [userId]
+        );
+        
+        if (studentRows && studentRows.length > 0) {
+          userData = {
+            id: studentRows[0].id,
+            role: 'student',
+            firstName: studentRows[0].first_name,
+            lastName: studentRows[0].last_name,
+            email: studentRows[0].email,
+            studentId: studentRows[0].student_id
+          };
+        }
+      }
+      
+      if (userData) {
+        console.log(`Header-based auth successful for user ${userId} (${role})`);
+        
+        // Check for existing active sessions for this user
+        try {
+          const [existingSessions] = await db.query(
+            `SELECT session_id FROM sessions 
+             WHERE user_id = ? AND role = ? AND is_active = TRUE AND expires_at > NOW()
+             ORDER BY created_at DESC LIMIT 1`,
+            [userId, role]
+          );
+          
+          if (existingSessions.length > 0) {
+            const existingSessionId = existingSessions[0].session_id;
+            console.log(`Found existing active session: ${existingSessionId} - reusing it`);
+          
+          // Update session last activity
+          await db.query(
+              "UPDATE sessions SET last_activity = NOW() WHERE session_id = ?",
+              [existingSessionId]
+            );
+            
+            // Set cookie with the EXISTING session ID
+            const isProd = process.env.NODE_ENV === 'production';
+            res.cookie('qr_attendance_sid', existingSessionId, {
+              httpOnly: true,
+              secure: isProd,
+              sameSite: isProd ? 'none' : 'lax',
+              maxAge: 24 * 60 * 60 * 1000 // 24 hours
+            });
+            
+          return res.json({
+            authenticated: true,
+              user: userData,
+              sessionID: existingSessionId,
+              authMethod: "session",
+              message: "Authenticated via headers, using existing session"
+            });
+          }
+          
+          // If we reach here, there are no existing sessions, proceed with new session creation
+          // Create a new session for this user
+          req.session.userId = userData.id;
+          req.session.role = role;
+          req.session.firstName = userData.firstName;
+          req.session.lastName = userData.lastName;
+          
+          // Save session explicitly
+          await new Promise((resolve, reject) => {
+            req.session.save(err => {
+              if (err) {
+                console.error("Error saving session:", err);
+                reject(err);
+              } else {
+                console.log("Created new session from header auth:", req.sessionID);
+                resolve();
+              }
+            });
+          });
+          
+          // Store in database
+          const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+          await db.query(
+            `INSERT INTO sessions 
+             (session_id, user_id, role, data, is_active, expires_at, created_at, last_activity)
+             VALUES (?, ?, ?, ?, TRUE, ?, NOW(), NOW())
+             ON DUPLICATE KEY UPDATE is_active = TRUE, expires_at = ?, last_activity = NOW()`,
+            [
+              req.sessionID,
+              userData.id,
+              role,
+              JSON.stringify(req.session),
+              expiresAt,
+              expiresAt
+            ]
+          );
+          
+          console.log(`New session created: ${req.sessionID}`);
+          
+          return res.json({
+            authenticated: true,
+            user: userData,
+            sessionID: req.sessionID,
+            authMethod: "session",
+            message: "Authenticated via headers, created new session"
+          });
+        } catch (sessionError) {
+          console.error("Error handling session during header auth:", sessionError);
+          // Fall through to unauthenticated response
+        }
+      } else {
+        console.log(`Invalid user ID or role in headers: ${userId} (${role})`);
       }
     }
     
-    // Neither method worked
-    return res.status(401).json({
+    console.log("Check-auth: Not authenticated");
+    return res.json({
       authenticated: false,
-      message: "Not authenticated",
-      debug: {
-        hasSession: !!req.session,
-        sessionID: req.sessionID || 'none',
-        hasUserId: !!req.session?.userId,
-        hasRole: !!req.session?.role,
-        hasXUserId: !!req.headers['x-user-id'],
-        hasXUserRole: !!req.headers['x-user-role'],
-        cookies: req.headers.cookie || 'none'
-      }
+      message: "No valid session found"
     });
   } catch (error) {
-    console.error("Auth check error:", error);
-    return res.status(500).json({
+    console.error("Check auth error:", error);
+    res.status(500).json({ 
       authenticated: false,
-      message: "Error checking authentication",
-      error: error.message
+      message: "Server error during authentication check",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
@@ -900,236 +1088,170 @@ router.get('/test-session-store', async (req, res) => {
 
 // 📌 Session re-authentication endpoint for LocalStorage fallback
 router.post("/reauth", async (req, res) => {
+  const { userId, role } = req.body;
+  
+  if (!userId || !role) {
+    return res.status(400).json({
+      success: false,
+      message: "Missing userId or role"
+    });
+  }
+  
   try {
-    const { userId, role } = req.body;
+    console.log(`Re-authentication attempt for user ${userId} (${role})`);
     
-    if (!userId || !role) {
-      return res.status(400).json({
-        success: false,
-        message: "Missing required fields for reauthentication"
-      });
-    }
+    // First check if there's already an active session for this user
+    const [existingSessions] = await db.query(
+      `SELECT session_id, data FROM sessions 
+       WHERE user_id = ? AND role = ? AND is_active = TRUE AND expires_at > NOW()
+       ORDER BY created_at DESC LIMIT 1`,
+      [userId, role]
+    );
     
-    // Verify user exists
-    let user;
-    if (role === 'teacher') {
-      const [teachers] = await db.query(
-        "SELECT id, first_name, last_name, email FROM teachers WHERE id = ?",
+    // If an active session exists, use it instead of creating a new one
+    if (existingSessions.length > 0) {
+      const existingSessionId = existingSessions[0].session_id;
+      console.log(`Found existing active session ${existingSessionId} for user ${userId}, reusing instead of creating new one`);
+      
+      // Update the session data
+      req.session.userId = userId;
+      req.session.role = role;
+      
+      // Get name information from database
+      const [userInfo] = await db.query(
+        `SELECT first_name, last_name FROM ${role}s WHERE id = ?`,
         [userId]
-      );
-      user = teachers[0];
-    } else if (role === 'student') {
-      const [students] = await db.query(
-        "SELECT id, first_name, last_name, email FROM students WHERE id = ?",
-        [userId]
-      );
-      user = students[0];
-    }
-    
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid user credentials"
-      });
-    }
-    
-    // IMPROVED SESSION MANAGEMENT: First invalidate any existing sessions for this user
-    try {
-      const [existingSessions] = await db.query(
-        `SELECT session_id FROM sessions 
-         WHERE user_id = ? AND role = ? AND is_active = TRUE`,
-        [userId, role]
       );
       
-      if (existingSessions.length > 0) {
-        console.log(`Found ${existingSessions.length} existing sessions for user ${userId}. Marking as inactive.`);
-        
-        await db.query(
-          `UPDATE sessions 
-           SET is_active = FALSE, last_activity = NOW()
-           WHERE user_id = ? AND role = ?`,
-          [userId, role]
-        );
+      if (userInfo.length > 0) {
+        req.session.firstName = userInfo[0].first_name;
+        req.session.lastName = userInfo[0].last_name;
       }
-    } catch (dbError) {
-      console.error("Error handling existing sessions:", dbError);
+      
+      // Update last activity
+      await db.query(
+        `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
+        [existingSessionId]
+      );
+      
+      // Set the session cookie explicitly
+      const isProd = process.env.NODE_ENV === 'production';
+      const cookieOptions = {
+        httpOnly: true,
+        path: '/',
+        maxAge: 24 * 60 * 60 * 1000, // 24 hours
+        secure: isProd,
+        sameSite: isProd ? 'none' : 'lax'
+      };
+      
+      res.cookie('qr_attendance_sid', existingSessionId, cookieOptions);
+      
+      return res.json({
+        success: true,
+        message: "Session reestablished",
+        sessionId: existingSessionId,
+        user: {
+          id: userId,
+          role: role,
+          firstName: req.session.firstName,
+          lastName: req.session.lastName
+        }
+      });
     }
     
-    // Set up a new session
-    req.session.regenerate(async function(err) {
+    // If no active session, create a new one
+    // Verify the user exists in the database
+    let userExists = false;
+    let firstName = null;
+    let lastName = null;
+    
+    if (role === 'teacher') {
+      const [teachers] = await db.query(
+        "SELECT id, first_name, last_name FROM teachers WHERE id = ? AND is_verified = TRUE",
+        [userId]
+      );
+      if (teachers.length > 0) {
+        userExists = true;
+        firstName = teachers[0].first_name;
+        lastName = teachers[0].last_name;
+      }
+    } else if (role === 'student') {
+      const [students] = await db.query(
+        "SELECT id, first_name, last_name FROM students WHERE id = ? AND is_verified = TRUE",
+        [userId]
+      );
+      if (students.length > 0) {
+        userExists = true;
+        firstName = students[0].first_name;
+        lastName = students[0].last_name;
+      }
+    }
+    
+    if (!userExists) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID or role"
+      });
+    }
+    
+    // Clear any existing session data and create a new one
+    req.session.regenerate((err) => {
       if (err) {
-        console.error("Error regenerating session:", err);
-        return res.status(500).json({
-          success: false,
-          message: "Session regeneration failed",
-          error: err.message
+        console.error("Session regeneration failed:", err);
+        return res.status(500).json({ 
+          success: false, 
+          message: "Failed to create new session" 
         });
       }
       
       // Set session data
-      req.session.userId = user.id;
+      req.session.userId = userId;
       req.session.role = role;
-      req.session.firstName = user.first_name;
-      req.session.lastName = user.last_name;
-      req.session.email = user.email;
-      req.session.createdAt = new Date().toISOString();
-      req.session.lastActivity = new Date().toISOString();
+      req.session.firstName = firstName;
+      req.session.lastName = lastName;
       
-      // Create the session in the database
-      try {
-        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
-        
-        await db.query(
-          `INSERT INTO sessions 
-           (session_id, data, expires_at, user_id, role, is_active, created_at, last_activity)
-           VALUES (?, ?, ?, ?, ?, TRUE, NOW(), NOW())
-           ON DUPLICATE KEY UPDATE
-           data = VALUES(data),
-           expires_at = VALUES(expires_at),
-           is_active = TRUE,
-           last_activity = NOW()`,
-          [
-            req.sessionID,
-            JSON.stringify(req.session),
-            expiresAt,
-            user.id,
-            role
-          ]
-        );
-        
-        console.log(`Session record created in database for reauth: ${req.sessionID}`);
-      } catch (dbError) {
-        console.error("Error creating session record:", dbError);
-      }
-      
-      // Save the session
-      req.session.save(function(saveErr) {
+      // Save session
+      req.session.save((saveErr) => {
         if (saveErr) {
-          console.error("Error saving session:", saveErr);
-          return res.status(500).json({
-            success: false,
-            message: "Session save failed",
-            error: saveErr.message
+          console.error("Session save failed:", saveErr);
+          return res.status(500).json({ 
+            success: false, 
+            message: "Failed to save session" 
           });
         }
         
-        console.log(`✅ Reauth session saved for user ${userId}. Session ID:`, req.sessionID);
+        console.log(`Created new session ${req.sessionID} for user ${userId}`);
         
-        // Set cookie manually with correct options
+        // Set cookie with proper environment settings
+        const isProd = process.env.NODE_ENV === 'production';
         const cookieOptions = {
           httpOnly: true,
           path: '/',
           maxAge: 24 * 60 * 60 * 1000, // 24 hours
-          secure: true,
-          sameSite: 'none'
+          secure: isProd,
+          sameSite: isProd ? 'none' : 'lax'
         };
         
         res.cookie('qr_attendance_sid', req.sessionID, cookieOptions);
         
-        // Return user data and session info with JWT token
         return res.json({
-          success: true,
-          role,
+      success: true, 
+          message: "Session created",
+          sessionId: req.sessionID,
           user: {
-            id: user.id,
-            firstName: user.first_name,
-            lastName: user.last_name,
-            email: user.email
-          },
-          sessionId: req.sessionID
+            id: userId,
+            role: role,
+            firstName: firstName,
+            lastName: lastName
+          }
         });
       });
     });
   } catch (error) {
-    console.error("Reauth error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Reauthentication failed",
-      error: error.message
-    });
-  }
-});
-
-// Add this new endpoint to support re-authentication when cookies are blocked by the browser
-// This will be used as a fallback when third-party cookies are blocked by the browser
-router.post('/reauth', async (req, res) => {
-    try {
-        const { userId, role } = req.body;
-        
-        if (!userId || !role) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'User ID and role are required for re-authentication'
-            });
-        }
-        
-        // Validate the userId and role
-        // For security, we need to check this against our database
-        const userQuery = role === 'teacher' 
-            ? 'SELECT * FROM teachers WHERE id = ?'
-            : 'SELECT * FROM students WHERE id = ?';
-        
-        const [users] = await db.query(userQuery, [userId]);
-        
-        if (users.length === 0) {
-            return res.status(401).json({
-                success: false,
-                message: 'Invalid user credentials'
-            });
-        }
-        
-        const user = users[0];
-        
-        // Create a new session or regenerate the existing one
-        req.session.regenerate((err) => {
-            if (err) {
-                console.error('Session regeneration error:', err);
-                return res.status(500).json({ 
-                    success: false, 
-                    message: 'Failed to create session'
-                });
-            }
-            
-            // Set session data
-            req.session.userId = userId;
-            req.session.userRole = role;
-            req.session.authenticated = true;
-            
-            // Log the new session
-            console.log(`Re-authentication successful. New session created: ${req.session.id} for user ${userId} (${role})`);
-            
-            // Ensure the session is saved before responding
-            req.session.save((err) => {
-                if (err) {
-                    console.error('Session save error:', err);
-                    return res.status(500).json({ 
-                        success: false, 
-                        message: 'Failed to save session'
-                    });
-                }
-                
-                // Send both session cookie AND auth token for maximum compatibility
-                const userData = {
-                    id: user.id,
-                    name: user.name,
-                    email: user.email,
-                    role: role
-                };
-                
-                res.status(200).json({
-                    success: true,
-                    message: 'Re-authentication successful',
-                    user: userData,
-                    sessionId: req.session.id
-                });
-            });
-        });
-    } catch (error) {
-        console.error('Re-authentication error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to re-authenticate',
-            error: error.message
+    console.error("Re-authentication error:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Server error during re-authentication" 
     });
   }
 });

@@ -67,10 +67,7 @@ app.use(
 // Add CORS headers directly for more compatibility
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  // Check if request is from Netlify
-  const isNetlify = origin && origin.includes('netlify.app');
-  
-  if (origin && (origin.includes('localhost') || origin.includes('127.0.0.1') || isNetlify)) {
+  if (origin && (origin.includes('localhost') || origin.includes('127.0.0.1') || origin.includes('netlify.app'))) {
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Cache-Control, X-User-ID, X-User-Role');
@@ -95,25 +92,21 @@ const sessionMiddleware = session({
   cookie: {
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
-    // HTTPS settings - basic secure config (will be modified per request)
-    secure: true,  // Always use secure with HTTPS
-    sameSite: 'lax' // Will be set to 'none' for cross-origin Netlify requests
+    // Set security based on environment
+    secure: true, // Set to true for proper cross-origin cookies
+    sameSite: 'none' // Critical for cross-origin cookies
   }
 });
 
-// Fix session initialization
+// Add session collision protection
 app.use((req, res, next) => {
-  // Skip session checks for OPTIONS requests
-  if (req.method === 'OPTIONS') {
-    return next();
-  }
-  
-  // Add a timestamp on first initialization to track session age
   if (req.session && !req.session.initialized) {
-    req.session.initialized = Date.now();
-    // Don't destroy new sessions!
+    req.session.destroy(err => {
+      if (err) console.error('Session destruction error:', err);
+      next();
+    });
+    return;
   }
-  
   next();
 });
 
@@ -167,23 +160,27 @@ Object.defineProperty(app.response, 'cookie', {
       path: '/'
     };
     
-    // Check if request is from Netlify site
-    const isNetlify = req.headers.origin && req.headers.origin.includes('netlify.app');
+    // Determine if we're in production
+    const isProd = process.env.NODE_ENV === 'production';
     
-    // For Netlify deployment (cross-origin), we MUST use these settings
-    if (isNetlify) {
-      console.log(`Setting cross-origin cookie for Netlify: ${req.headers.origin}`);
+    // Set secure and sameSite for all cookies in production
+    if (isProd) {
       cookieOptions.secure = true;
       cookieOptions.sameSite = 'none';
-    } else {
+      // Set domain to allow cross-site cookies if in production
+      // This helps with Netlify to Railway communication
+      if (req.headers.origin && req.headers.origin.includes('netlify.app')) {
+        // Don't set domain for cross-origin cookies, just ensure SameSite is none
+        console.log(`Setting cross-origin cookie for origin: ${req.headers.origin}`);
+      }
+    } else if (req.headers.origin && (req.headers.origin.includes('localhost') || req.headers.origin.includes('127.0.0.1'))) {
       // Local development settings
-      const isProd = process.env.NODE_ENV === 'production';
-      cookieOptions.secure = true; // We're using HTTPS
+      cookieOptions.secure = false;
       cookieOptions.sameSite = 'lax';
     }
     
     // Log cookie settings for debugging
-    console.log(`🍪 Setting cookie ${name} (SameSite=${cookieOptions.sameSite}, Secure=${cookieOptions.secure}, Origin=${req.headers.origin || 'none'})`);
+    console.log(`🍪 Setting cookie ${name} (SameSite=${cookieOptions.sameSite}, Secure=${cookieOptions.secure})`);
     
     return originalCookie.call(this, name, value, cookieOptions);
   },
@@ -279,8 +276,7 @@ async function cleanupDuplicateSessions() {
       console.log(`Invalidated ${expiredResult.affectedRows} expired sessions`);
     }
     
-    // Rather than removing duplicates automatically, let's just log them
-    // This will help diagnose issues without breaking existing sessions
+    // Find all users with multiple active sessions
     const [users] = await db.query(`
       SELECT user_id, role, COUNT(*) as session_count 
       FROM sessions 
@@ -289,10 +285,14 @@ async function cleanupDuplicateSessions() {
       HAVING COUNT(*) > 1
     `);
     
-    console.log(`Found ${users.length} users with multiple active sessions (will preserve all sessions for now)`);
+    console.log(`Found ${users.length} users with multiple active sessions`);
+    
+    let totalInvalidated = 0;
     
     for (const user of users) {
-      // Just log the sessions without taking destructive action
+      console.log(`User ${user.user_id} (${user.role}) has ${user.session_count} active sessions`);
+      
+      // Get all sessions for this user
       const [sessions] = await db.query(`
         SELECT session_id, created_at, last_activity
         FROM sessions
@@ -300,11 +300,34 @@ async function cleanupDuplicateSessions() {
         ORDER BY last_activity DESC, created_at DESC
       `, [user.user_id, user.role]);
       
-      console.log(`User ${user.user_id} (${user.role}) has ${sessions.length} active sessions:`);
-      sessions.forEach((s, idx) => {
-        console.log(`  Session ${idx+1}: ${s.session_id} (created: ${s.created_at}, last activity: ${s.last_activity})`);
-      });
+      if (sessions.length > 1) {
+        // Keep only the newest session based on last activity time
+        const keepSessionId = sessions[0].session_id;
+        const sessionsToInvalidate = sessions.slice(1).map(s => s.session_id);
+        
+        console.log(`Keeping most recent session ${keepSessionId} (last activity: ${sessions[0].last_activity})`);
+        console.log(`Invalidating ${sessionsToInvalidate.length} older sessions`);
+        
+        if (sessionsToInvalidate.length > 0) {
+          // Log the sessions being invalidated
+          sessions.slice(1).forEach((s, idx) => {
+            console.log(`  Session ${idx+1}: ${s.session_id} (created: ${s.created_at}, last activity: ${s.last_activity})`);
+          });
+          
+          // Invalidate older sessions
+          const [updateResult] = await db.query(`
+            UPDATE sessions
+            SET is_active = FALSE, expires_at = NOW()
+            WHERE session_id IN (?)
+          `, [sessionsToInvalidate]);
+          
+          totalInvalidated += updateResult.affectedRows;
+          console.log(`Successfully invalidated ${updateResult.affectedRows} sessions`);
+        }
+      }
     }
+    
+    console.log(`🧹 Session cleanup complete. Total invalidated: ${totalInvalidated}`);
     
     // Count remaining active sessions
     const [countResult] = await db.query(
@@ -313,6 +336,46 @@ async function cleanupDuplicateSessions() {
     
     if (countResult[0]?.total > 0) {
       console.log(`ℹ️ Current active sessions: ${countResult[0].total}`);
+    }
+    
+    // Run another verification to ensure each user has only one active session
+    const [duplicateCheck] = await db.query(`
+      SELECT user_id, role, COUNT(*) as session_count 
+      FROM sessions 
+      WHERE is_active = TRUE 
+      GROUP BY user_id, role 
+      HAVING COUNT(*) > 1
+    `);
+    
+    if (duplicateCheck.length > 0) {
+      console.log(`⚠️ Warning: Still found ${duplicateCheck.length} users with multiple sessions after cleanup`);
+      // Force cleanup again with more aggressive approach if needed
+      for (const user of duplicateCheck) {
+        console.log(`Force cleanup for user ${user.user_id} (${user.role})`);
+        
+        // Get the most recently active session
+        const [mostRecent] = await db.query(`
+          SELECT session_id FROM sessions
+          WHERE user_id = ? AND role = ? AND is_active = TRUE
+          ORDER BY last_activity DESC, created_at DESC
+          LIMIT 1
+        `, [user.user_id, user.role]);
+        
+        if (mostRecent.length > 0) {
+          const keepId = mostRecent[0].session_id;
+          
+          // Force invalidate ALL other sessions for this user
+          await db.query(`
+            UPDATE sessions 
+            SET is_active = FALSE, expires_at = NOW()
+            WHERE user_id = ? AND role = ? AND session_id != ? AND is_active = TRUE
+          `, [user.user_id, user.role, keepId]);
+          
+          console.log(`Forced cleanup complete for user ${user.user_id}`);
+        }
+      }
+    } else {
+      console.log(`✅ Verification complete: Each user has at most one active session`);
     }
   } catch (error) {
     console.error('❌ Error cleaning up sessions:', error);
@@ -422,9 +485,6 @@ app.get('/auth/debug-cookies', (req, res) => {
   console.log('Origin:', req.headers.origin);
   console.log('Host:', req.headers.host);
   
-  // Check if request is from Netlify
-  const isNetlify = req.headers.origin && req.headers.origin.includes('netlify.app');
-  
   // Set a test cookie with current settings
   const testCookieName = 'debug_test_cookie';
   const isCrossDomainLocalhost = 
@@ -435,30 +495,8 @@ app.get('/auth/debug-cookies', (req, res) => {
     
   const isLocalDev = process.env.NODE_ENV !== 'production';
   
-  // Set cookies based on the origin
-  if (isNetlify) {
-    // Cross-origin Netlify settings
-    console.log('Setting cookies for Netlify (cross-origin)');
-    res.cookie(testCookieName, 'netlify_cross_domain', {
-      httpOnly: false, // Make visible to JS for debugging
-      secure: true,    // Must be true for cross-origin
-      sameSite: 'none', // Must be 'none' for cross-origin
-      path: '/',
-      maxAge: 60000 // 1 minute
-    });
-    
-    // Also refresh session cookie
-    if (req.sessionID) {
-      res.cookie('qr_attendance_sid', req.sessionID, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'none',
-        path: '/',
-        maxAge: 24 * 60 * 60 * 1000 // 24 hours
-      });
-    }
-  } else if (isCrossDomainLocalhost) {
-    // Cross-origin localhost
+  // Set a test cookie that matches our current environment settings
+  if (isCrossDomainLocalhost) {
     res.cookie(testCookieName, 'cross_domain_test', {
       httpOnly: true,
       secure: true,
@@ -466,81 +504,33 @@ app.get('/auth/debug-cookies', (req, res) => {
       path: '/',
       maxAge: 60000 // 1 minute
     });
-  } else {
-    // Same-origin requests
-    res.cookie(testCookieName, 'local_same_origin', {
+  } else if (isLocalDev) {
+    res.cookie(testCookieName, 'local_dev_test', {
       httpOnly: false, // Make visible to JS for debugging
-      secure: true,    // Must be true for HTTPS
+      secure: false,
       sameSite: 'lax',
       path: '/',
       maxAge: 60000 // 1 minute
     });
-    
-    // Also refresh the session cookie
-    if (req.sessionID) {
-      res.cookie('qr_attendance_sid', req.sessionID, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'lax',
-        path: '/',
-        maxAge: 24 * 60 * 60 * 1000 // 24 hours
-      });
-    }
   }
   
-  // Get the session from the database if available
-  db.query(
-    "SELECT * FROM sessions WHERE session_id = ?", 
-    [req.sessionID]
-  ).then(([sessionRows]) => {
-    let sessionExists = false;
-    let sessionData = null;
-    
-    if (sessionRows && sessionRows.length > 0) {
-      sessionExists = true;
-      try {
-        sessionData = JSON.parse(sessionRows[0].data || '{}');
-      } catch (e) {
-        console.error("Error parsing session data:", e);
+  res.json({
+    receivedCookies: req.cookies,
+    cookieHeader: req.headers.cookie,
+    sessionID: req.sessionID,
+    currentSettings: {
+      origin: req.headers.origin,
+      host: req.headers.host,
+      isCrossDomainLocalhost,
+      isLocalDev,
+      cookieSettings: isCrossDomainLocalhost ? {
+        secure: true,
+        sameSite: 'none'
+      } : {
+        secure: false,
+        sameSite: 'lax'
       }
     }
-    
-    res.json({
-      receivedCookies: req.cookies,
-      cookieHeader: req.headers.cookie,
-      sessionID: req.sessionID,
-      sessionExists: sessionExists,
-      sessionActive: sessionExists ? sessionRows[0].is_active : false,
-      sessionData: sessionData,
-      currentSettings: {
-        origin: req.headers.origin,
-        host: req.headers.host,
-        isCrossDomainLocalhost,
-        isNetlify,
-        isLocalDev,
-        useSecure: true,
-        useSameSite: isNetlify ? 'none' : 'lax',
-        cookieSettings: {
-          secure: true,
-          sameSite: isNetlify ? 'none' : 'lax'
-        }
-      }
-    });
-  }).catch(err => {
-    console.error("Error checking session:", err);
-    res.json({
-      receivedCookies: req.cookies,
-      cookieHeader: req.headers.cookie,
-      sessionID: req.sessionID,
-      error: "Failed to check session in database",
-      currentSettings: {
-        origin: req.headers.origin,
-        host: req.headers.host,
-        isCrossDomainLocalhost,
-        isNetlify,
-        isLocalDev
-      }
-    });
   });
 });
 
@@ -573,50 +563,6 @@ app.get('/auth/debug-headers', (req, res) => {
       nodeEnv: process.env.NODE_ENV || 'not set'
     }
   });
-});
-
-// Add debugging route for cookies
-app.get('/debug/cookies', (req, res) => {
-  // Get all cookies sent by browser
-  const receivedCookies = req.cookies;
-  
-  // Current session ID if available
-  const sessionId = req.session && req.session.id;
-  
-  // Set a test cookie
-  const cookieOptions = {
-    httpOnly: true,
-    secure: true,
-    sameSite: 'none',
-    path: '/'
-  };
-  
-  res.cookie('server_test_cookie', 'test_value', cookieOptions);
-  
-  // Prepare response
-  const response = {
-    success: true,
-    message: 'Cookie debug information',
-    sessionId: sessionId,
-    cookiesReceived: receivedCookies,
-    sessionData: req.session ? {
-      id: req.session.id,
-      cookie: req.session.cookie,
-      authenticated: req.session.authenticated,
-      userId: req.session.userId,
-      userRole: req.session.userRole
-    } : null,
-    cookiesSet: [
-      `server_test_cookie=test_value; HttpOnly; Secure; SameSite=None; Path=/`
-    ]
-  };
-  
-  // For debugging
-  console.log('Debug cookies endpoint called');
-  console.log('Cookies received:', receivedCookies);
-  console.log('Session:', req.session ? req.session.id : 'No session');
-  
-  res.json(response);
 });
 
 // Error handling
