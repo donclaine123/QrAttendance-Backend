@@ -11,8 +11,6 @@ const qrSystem = require("./Routes/QrSystem");
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
-const rateLimit = require('express-rate-limit');
-
 
 const app = express();
 const PORT = process.env.PORT || 5000;
