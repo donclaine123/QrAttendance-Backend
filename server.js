@@ -83,7 +83,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// Configure session middleware
+// Configure session middleware with strict session creation control
 const sessionMiddleware = session({
   key: 'qr_attendance_sid',
   secret: process.env.SESSION_SECRET || crypto.randomBytes(64).toString('hex'),
@@ -96,27 +96,73 @@ const sessionMiddleware = session({
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
     secure: true,
     sameSite: 'none'
+  },
+  genid: function(req) {
+    // Only generate new session IDs during login
+    if (req.path === '/auth/login') {
+      return crypto.randomBytes(32).toString('hex');
+    }
+    return req.cookies.qr_attendance_sid || crypto.randomBytes(32).toString('hex');
   }
 });
 
-// Session handling middleware
+// Session handling middleware with strict controls
 app.use(async (req, res, next) => {
-  // Skip session for OPTIONS requests
-  if (req.method === 'OPTIONS') {
-    return next();
-  }
-
-  // Skip session for static resources and health checks
-  if (req.path.includes('/static/') || req.path.includes('/health') || req.path.includes('/favicon')) {
+  // Skip session handling for OPTIONS and static resources
+  if (req.method === 'OPTIONS' || 
+      req.path.includes('/static/') || 
+      req.path.includes('/health') || 
+      req.path.includes('/favicon')) {
     return next();
   }
 
   // Check if there's an existing session cookie
   const sessionId = req.cookies.qr_attendance_sid;
 
+  // Only proceed with session handling if:
+  // 1. It's a login request
+  // 2. There's a valid session cookie
+  // 3. It's using header-based auth with valid credentials
+  if (!sessionId && req.path !== '/auth/login') {
+    const userId = req.headers['x-user-id'];
+    const userRole = req.headers['x-user-role'];
+
+    if (userId && userRole) {
+      try {
+        // Check for existing valid session for this user
+        const [sessions] = await db.query(
+          `SELECT session_id FROM sessions 
+           WHERE user_id = ? AND role = ? AND is_active = TRUE AND expires_at > NOW()
+           ORDER BY last_activity DESC LIMIT 1`,
+          [userId, userRole]
+        );
+
+        if (sessions.length > 0) {
+          // Use existing session instead of creating new one
+          res.cookie('qr_attendance_sid', sessions[0].session_id, {
+            httpOnly: true,
+            secure: true,
+            sameSite: 'none',
+            path: '/',
+            maxAge: 24 * 60 * 60 * 1000
+          });
+        } else {
+          // No valid session found for header auth
+          return next();
+        }
+      } catch (error) {
+        console.error('Error checking user sessions:', error);
+        return next();
+      }
+    } else {
+      // No session cookie and no header auth
+      return next();
+    }
+  }
+
+  // If we have a session ID, verify it's still valid
   if (sessionId) {
     try {
-      // Check if this session exists and is active in the database
       const [sessions] = await db.query(
         `SELECT * FROM sessions 
          WHERE session_id = ? AND is_active = TRUE AND expires_at > NOW()`,
@@ -124,31 +170,28 @@ app.use(async (req, res, next) => {
       );
 
       if (sessions.length > 0) {
-        // Valid session exists, update last activity
+        // Update last activity
         await db.query(
           `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
           [sessionId]
         );
-      } else if (req.path !== '/auth/login') {
-        // Invalid session but not a login request - clear the cookie
+      } else {
+        // Invalid session - clear the cookie
         res.clearCookie('qr_attendance_sid', {
           path: '/',
           httpOnly: true,
           secure: true,
           sameSite: 'none'
         });
+        return next();
       }
     } catch (error) {
-      console.error('Error checking session:', error);
+      console.error('Error verifying session:', error);
+      return next();
     }
   }
 
-  // Only create new sessions for login or if a valid session cookie exists
-  if (!sessionId && req.path !== '/auth/login') {
-    return next();
-  }
-
-  // Apply session middleware
+  // Apply session middleware only for valid cases
   sessionMiddleware(req, res, next);
 });
 

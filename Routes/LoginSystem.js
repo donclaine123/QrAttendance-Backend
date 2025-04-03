@@ -245,86 +245,121 @@ router.post('/logout', async (req, res) => {
   }
 });
 
-// 📌 Session Validation Middleware (add to authMiddleware.js)
+// 📌 Session Validation Middleware
 const authenticate = async (req, res, next) => {
-  // Check for session data
-  if (req.session && req.session.userId && req.session.role) {
-    // Already authenticated via session
-    req.user = { 
-      id: req.session.userId, 
-      role: req.session.role,
-      firstName: req.session.firstName,
-      lastName: req.session.lastName
-    };
-    // Refresh last_activity in the database
-    try {
-      await db.query(
-        `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
-        [req.sessionID]
-      );
-    } catch (dbError) {
-      console.log('Error updating session last activity:', dbError);
-      // Continue anyway, not critical
-    }
-    return next();
-  }
-
-  // No valid session, check if cookies exist
-  const sessionId = req.cookies.qr_attendance_sid;
-  if (!sessionId) {
-    // No session cookie found - unauthorized
-    return res.status(401).json({ success: false, message: "Unauthorized - No session found" });
-  }
-
   try {
-    // Try to restore session from database
-    const [sessions] = await db.query(
-      `SELECT user_id, role, data FROM sessions 
-       WHERE session_id = ? AND expires_at > NOW() AND is_active = TRUE`,
-      [sessionId]
-    );
+    // First try cookie-based session
+    const sessionId = req.cookies.qr_attendance_sid;
+    let isAuthenticated = false;
 
-    if (!sessions.length) {
-      // Session expired or not found
-      res.clearCookie("qr_attendance_sid");
-      return res.status(401).json({ success: false, message: "Session expired or invalid" });
-    }
-
-    // Rebuild session from stored data
-    try {
-      const sessionData = JSON.parse(sessions[0].data);
-      req.session.userId = sessionData.userId;
-      req.session.role = sessionData.role;
-      req.session.firstName = sessionData.firstName;
-      req.session.lastName = sessionData.lastName;
-      
-      // Update session last activity
-      await db.query(
-        `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
+    if (sessionId) {
+      // Check if this session exists and is active in the database
+      const [sessions] = await db.query(
+        `SELECT * FROM sessions 
+         WHERE session_id = ? AND is_active = TRUE AND expires_at > NOW()`,
         [sessionId]
       );
-    } catch (parseError) {
-      console.error("Error parsing session data:", parseError);
-      // If can't parse stored data, use the basic info
-      req.session.userId = sessions[0].user_id;
-      req.session.role = sessions[0].role;
+
+      if (sessions.length > 0) {
+        const sessionData = JSON.parse(sessions[0].data);
+        req.user = {
+          id: sessions[0].user_id,
+          role: sessions[0].role,
+          firstName: sessionData.firstName,
+          lastName: sessionData.lastName
+        };
+        
+        // Update last activity
+        await db.query(
+          `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
+          [sessionId]
+        );
+        
+        isAuthenticated = true;
+      }
     }
 
-    // Set user object for request
-    req.user = { 
-      id: req.session.userId, 
-      role: req.session.role,
-      firstName: req.session.firstName,
-      lastName: req.session.lastName
-    };
-    
+    // If cookie auth failed, try header-based auth
+    if (!isAuthenticated) {
+      const userId = req.headers['x-user-id'];
+      const userRole = req.headers['x-user-role'];
+
+      if (userId && userRole) {
+        // Look up the most recent active session for this user
+        const [sessions] = await db.query(
+          `SELECT * FROM sessions 
+           WHERE user_id = ? AND role = ? AND is_active = TRUE AND expires_at > NOW()
+           ORDER BY last_activity DESC, created_at DESC LIMIT 1`,
+          [userId, userRole]
+        );
+
+        if (sessions.length > 0) {
+          const sessionData = JSON.parse(sessions[0].data);
+          req.user = {
+            id: parseInt(userId),
+            role: userRole,
+            firstName: sessionData.firstName,
+            lastName: sessionData.lastName
+          };
+
+          // Update last activity
+          await db.query(
+            `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
+            [sessions[0].session_id]
+          );
+
+          // Set the cookie to maintain the session
+          const isProd = process.env.NODE_ENV === 'production';
+          res.cookie('qr_attendance_sid', sessions[0].session_id, {
+            httpOnly: true,
+            secure: isProd,
+            sameSite: isProd ? 'none' : 'lax',
+            path: '/',
+            maxAge: 24 * 60 * 60 * 1000 // 24 hours
+          });
+
+          isAuthenticated = true;
+        }
+      }
+    }
+
+    if (!isAuthenticated) {
+      return res.status(401).json({ 
+        success: false, 
+        message: "Authentication required" 
+      });
+    }
+
     next();
   } catch (error) {
     console.error("Authentication error:", error);
-    res.status(500).json({ success: false, message: "Server error during authentication" });
+    res.status(500).json({ 
+      success: false, 
+      message: "Server error during authentication" 
+    });
   }
 };
 
+// Role-based authorization middleware
+const requireRole = (role) => {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ 
+        success: false, 
+        message: "Authentication required" 
+      });
+    }
+
+    if (req.user.role !== role) {
+      return res.status(403).json({ 
+        success: false, 
+        message: `Access denied. ${role} role required.` 
+      });
+    }
+
+    next();
+  };
+};
 
 // 📌 Register User
 router.post("/register", async (req, res) => {
@@ -467,8 +502,8 @@ router.get('/check-auth', async (req, res) => {
           [sessionId]
         );
 
-        return res.json({
-          authenticated: true,
+      return res.json({
+        authenticated: true,
           user: {
             id: sessions[0].user_id,
             role: sessions[0].role,
@@ -501,7 +536,7 @@ router.get('/check-auth', async (req, res) => {
       );
 
       if (sessions.length > 0) {
-        const sessionData = JSON.parse(sessions[0].data);
+          const sessionData = JSON.parse(sessions[0].data);
         
         // Set the cookie to the existing session
         res.cookie('qr_attendance_sid', sessions[0].session_id, {
@@ -512,9 +547,9 @@ router.get('/check-auth', async (req, res) => {
           maxAge: 24 * 60 * 60 * 1000 // 24 hours
         });
 
-        return res.json({
-          authenticated: true,
-          user: {
+          return res.json({
+            authenticated: true,
+            user: {
             id: sessions[0].user_id,
             role: sessions[0].role,
             firstName: sessionData.firstName,
