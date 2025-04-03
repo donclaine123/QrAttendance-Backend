@@ -524,64 +524,11 @@ router.get("/check-auth", async (req, res) => {
       if (userData) {
         console.log(`Header-based auth successful for user ${userId} (${role})`);
         
-        // Create a lightweight session for header-based auth
-        // This ensures other endpoints that require a session will work
-        req.session.userId = userData.id;
-        req.session.role = role;
-        req.session.firstName = userData.firstName;
-        req.session.lastName = userData.lastName;
-        req.session.email = userData.email;
-        req.session.createdAt = new Date().toISOString();
-        req.session.lastActivity = new Date().toISOString();
-        req.session.fromHeaders = true; // Mark that this session was created from headers
-        
-        // Save the session but don't return until it's done
-        await new Promise((resolve, reject) => {
-          req.session.save((err) => {
-            if (err) {
-              console.error("Error saving session from header auth:", err);
-              reject(err);
-            } else {
-              console.log("Created lightweight session from header auth:", req.sessionID);
-              resolve();
-            }
-          });
-        });
-        
-        // Check for and invalidate excess sessions
-        try {
-          const [existingSessions] = await db.query(
-            `SELECT session_id FROM sessions 
-             WHERE user_id = ? AND role = ? AND is_active = TRUE AND session_id != ?`,
-            [userData.id, role, req.sessionID]
-          );
-          
-          if (existingSessions.length > 0) {
-            console.log(`Found ${existingSessions.length} existing sessions for user. Will keep only newest.`);
-            
-            // Keep this session and one other (the newest)
-            if (existingSessions.length > 1) {
-              const sessionsToInvalidate = existingSessions.slice(1).map(s => s.session_id);
-              
-              await db.query(
-                `UPDATE sessions 
-                 SET is_active = FALSE, expires_at = NOW()
-                 WHERE session_id IN (?)`,
-                [sessionsToInvalidate]
-              );
-              
-              console.log(`Invalidated ${sessionsToInvalidate.length} excess sessions`);
-            }
-          }
-        } catch (dbError) {
-          console.error("Error managing sessions:", dbError);
-          // Continue anyway, not critical
-        }
-        
-        return res.json({
-          authenticated: true,
+        // Don't create a new session - just return authenticated with user data
+        // This prevents creating multiple sessions and keeps authentication lightweight
+          return res.json({
+            authenticated: true,
           user: userData,
-          sessionID: req.sessionID,
           restored: true,
           message: "Authenticated via headers"
         });
@@ -591,14 +538,14 @@ router.get("/check-auth", async (req, res) => {
     }
     
     console.log("Check-auth: Not authenticated");
-    return res.json({ 
-      authenticated: false, 
-      message: "No valid session found" 
+    return res.json({
+      authenticated: false,
+      message: "No valid session found"
     });
   } catch (error) {
     console.error("Check auth error:", error);
     res.status(500).json({ 
-      authenticated: false, 
+      authenticated: false,
       message: "Server error during authentication check",
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
@@ -1036,7 +983,7 @@ router.post('/reauth', async (req, res) => {
       
       // Return success with user data
       return res.json({ 
-        success: true,
+      success: true, 
         message: "Re-authentication successful",
         sessionId: req.sessionID,
         user: {

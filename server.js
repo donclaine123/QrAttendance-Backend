@@ -308,17 +308,13 @@ app.use("/auth", qrSystem);
 // Add teacher routes with proper path
 app.use("/teacher", qrSystem);
 
-// Security headers
-app.use((req, res, next) => {
-  res.set({
-    'X-Content-Type-Options': 'nosniff',
-    'X-Frame-Options': 'DENY',
-    'X-XSS-Protection': '1; mode=block',
-    'Access-Control-Allow-Origin': req.headers.origin || '*',
-    'Access-Control-Allow-Credentials': 'true'
-  });
-  next();
-});
+// Around the CORS configuration
+app.use(cors({
+  origin: process.env.FRONTEND_URL,
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  exposedHeaders: ['Content-Length', 'X-Session-Id']
+}));
 
 // Forward /attend route to /auth/attend
 app.get('/attend', (req, res) => {

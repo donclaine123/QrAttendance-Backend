@@ -602,7 +602,7 @@ router.get("/teacher-classes/:teacherId", async (req, res) => {
         [teacherId]
       );
       
-      console.log(`Found ${rows.length} classes for teacher ${teacherId} using complex query`);
+      console.log(`Found ${rows.length} classes for teacher ${teacherId}`);
       
       res.json({
         success: true,
@@ -610,65 +610,30 @@ router.get("/teacher-classes/:teacherId", async (req, res) => {
       });
     } catch (queryError) {
       console.error("Database query error:", queryError);
+      // Fallback to a simpler query if the join is causing issues
+      console.log("Trying fallback query...");
       
-      // Separate try-catch for the fallback to isolate errors
-      try {
-        // Try a simpler query that's less likely to fail
-        console.log("Trying fallback simple query...");
-        
-        const [basicRows] = await db.query(
-          `SELECT id, class_name as name, description, subject
-           FROM class_records 
-           WHERE teacher_id = ? AND is_active = TRUE
-           ORDER BY class_name ASC`,
-          [teacherId]
-        );
-        
-        console.log(`Found ${basicRows.length} classes using fallback query`);
-        
-        // If we get here, the query succeeded
-        return res.json({
-          success: true,
-          classes: basicRows,
-          usedFallback: true
-        });
-      } catch (fallbackError) {
-        // Both queries failed, likely a database connection issue
-        console.error("Fallback query also failed:", fallbackError);
-        
-        // Final fallback - check if the teacher exists
-        try {
-          const [teacherCheck] = await db.query(
-            "SELECT id FROM teachers WHERE id = ?",
-            [teacherId]
-          );
-          
-          if (teacherCheck.length === 0) {
-            return res.status(404).json({
-              success: false,
-              message: "Teacher not found"
-            });
-          }
-          
-          // Teacher exists but can't query classes - return empty array
-          return res.json({
-            success: true,
-            classes: [],
-            dbError: true,
-            message: "Database error fetching classes"
-          });
-        } catch (finalError) {
-          // Complete database failure
-          console.error("Complete database failure:", finalError);
-          throw finalError; // Let the outer catch handle it
-        }
-      }
+      const [basicRows] = await db.query(
+        `SELECT id, class_name as name, description, subject
+         FROM class_records 
+         WHERE teacher_id = ? AND is_active = TRUE
+         ORDER BY class_name ASC`,
+        [teacherId]
+      );
+      
+      console.log(`Found ${basicRows.length} classes in fallback query`);
+      
+      res.json({
+        success: true,
+        classes: basicRows,
+        usedFallback: true
+      });
     }
   } catch (error) {
     console.error("Error fetching teacher classes:", error);
     res.status(500).json({
       success: false,
-      message: "Database connection error. Please try again later.",
+      message: "Failed to load classes",
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
