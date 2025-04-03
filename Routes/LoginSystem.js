@@ -24,6 +24,82 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// Email template for verification
+const getVerificationEmailTemplate = (verifyUrl, firstName) => `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Email Verification</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      color: #333;
+      margin: 0;
+      padding: 0;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    .header {
+      background-color: #4CAF50;
+      color: white;
+      padding: 20px;
+      text-align: center;
+      border-radius: 5px 5px 0 0;
+    }
+    .content {
+      background-color: #f9f9f9;
+      padding: 20px;
+      border: 1px solid #ddd;
+      border-radius: 0 0 5px 5px;
+    }
+    .button {
+      display: inline-block;
+      padding: 12px 24px;
+      background-color: #4CAF50;
+      color: white;
+      text-decoration: none;
+      border-radius: 5px;
+      margin: 20px 0;
+    }
+    .footer {
+      text-align: center;
+      margin-top: 20px;
+      font-size: 12px;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Email Verification</h1>
+    </div>
+    <div class="content">
+      <p>Hello ${firstName},</p>
+      <p>Thank you for registering with our QR Code Attendance System. To complete your registration and verify your email address, please click the button below:</p>
+      <p style="text-align: center;">
+        <a href="${verifyUrl}" class="button">Verify Email Address</a>
+      </p>
+      <p>If the button above doesn't work, you can also copy and paste the following link into your browser:</p>
+      <p style="word-break: break-all; font-size: 12px; color: #666;">${verifyUrl}</p>
+      <p>This verification link will expire in 24 hours for security reasons.</p>
+      <p>If you did not create an account with us, please ignore this email.</p>
+    </div>
+    <div class="footer">
+      <p>This is an automated message, please do not reply to this email.</p>
+      <p>&copy; ${new Date().getFullYear()} QR Code Attendance System. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
 // 📌 Updated Login Function
 router.post("/login", async (req, res) => {
   const { email, password } = req.body;
@@ -399,12 +475,12 @@ router.post("/register", async (req, res) => {
     }
 
     // 🔹 Send verification email
-    const verifyUrl = `http://localhost:5000/auth/verify?token=${verificationToken}`;
+    const verifyUrl = `${process.env.FRONTEND_URL || 'http://localhost:5000'}/auth/verify?token=${verificationToken}`;
     await transporter.sendMail({
-      from: process.env.EMAIL_USER,
+      from: `"QR Code Attendance System" <${process.env.EMAIL_USER}>`,
       to: email,
-      subject: "Verify Your Email",
-      html: `<p>Click <a href="${verifyUrl}">VERIFY</a> to verify your email.</p>`,
+      subject: "Verify Your Email - QR Code Attendance System",
+      html: getVerificationEmailTemplate(verifyUrl, firstName),
     });
 
     res.json({ 
