@@ -194,7 +194,6 @@ router.post('/logout', async (req, res) => {
     const userId = req.session.userId;
     const role = req.session.role;
     const sessionId = req.sessionID; // Store session ID before destroying
-    console.log(sessionId);
     // Destroy the session
     await new Promise((resolve, reject) => {
       req.session.destroy(err => {
@@ -450,12 +449,73 @@ router.get("/check-auth", async (req, res) => {
   try {
     console.log("Check-auth request - Session ID:", req.sessionID);
     console.log("Check-auth request - Cookies:", req.headers.cookie || 'none');
-    console.log("Check-auth request - Headers:", {
-      'x-user-id': req.headers['x-user-id'] || 'not set',
-      'x-user-role': req.headers['x-user-role'] || 'not set'
-    });
     
-    // Get session cookie directly to validate
+    // For debugging
+    if (req.headers['x-user-id'] || req.headers['x-user-role']) {
+      console.log("Check-auth request - Headers:", {
+        'x-user-id': req.headers['x-user-id'] || 'not set',
+        'x-user-role': req.headers['x-user-role'] || 'not set'
+      });
+    }
+    
+    // STEP 1: First try to get the session from req.session (express-session)
+    if (req.session && req.session.userId && req.session.role) {
+      console.log("Check-auth: Session authenticated via express-session, ID:", req.sessionID);
+      
+      // Extract user information from session
+      const role = req.session.role;
+      const userId = req.session.userId;
+      
+      let userData = {
+        id: userId,
+        role: role,
+        firstName: req.session.firstName,
+        lastName: req.session.lastName
+      };
+      
+      // Get additional user info from database if needed
+      if (role === 'teacher') {
+        const [teacherRows] = await db.query(
+          "SELECT email FROM teachers WHERE id = ?", 
+          [userId]
+        );
+        
+        if (teacherRows && teacherRows.length > 0) {
+          userData.email = teacherRows[0].email;
+        }
+      } else if (role === 'student') {
+        const [studentRows] = await db.query(
+          "SELECT email, student_id FROM students WHERE id = ?", 
+          [userId]
+        );
+        
+        if (studentRows && studentRows.length > 0) {
+          userData.email = studentRows[0].email;
+          userData.studentId = studentRows[0].student_id;
+        }
+      }
+      
+      // Update session activity in the database
+      try {
+        await db.query(
+          "UPDATE sessions SET last_activity = NOW() WHERE session_id = ?",
+          [req.sessionID]
+        );
+      } catch (dbError) {
+        console.error("Error updating session activity:", dbError);
+        // Non-critical error, continue
+      }
+      
+      // Keep using the same session ID - don't create a new one
+      return res.json({
+        authenticated: true,
+        user: userData,
+        sessionID: req.sessionID,
+        authMethod: "express-session"
+      });
+    }
+    
+    // STEP 2: Try to get the session from the session cookie directly
     const sessionCookie = req.cookies?.qr_attendance_sid || (req.headers.cookie || '')
       .split(';')
       .map(c => c.trim())
@@ -517,16 +577,15 @@ router.get("/check-auth", async (req, res) => {
           req.session.firstName = userData.firstName;
           req.session.lastName = userData.lastName;
           
+          // Update session activity
+          await db.query(
+            "UPDATE sessions SET last_activity = NOW() WHERE session_id = ?",
+            [sessionCookie]
+          );
+          
           console.log(`Session authentication successful for user ${userId} (${role})`);
           
-          // Set explicit cookie with proper settings
-          res.cookie('qr_attendance_sid', sessionCookie, {
-            httpOnly: true,
-            secure: true,
-            sameSite: 'none',
-            maxAge: 24 * 60 * 60 * 1000 // 24 hours
-          });
-          
+          // Use the EXISTING session ID - don't create a new one!
           return res.json({
             authenticated: true,
             user: userData,
@@ -541,73 +600,26 @@ router.get("/check-auth", async (req, res) => {
       }
     }
     
-    // Check for standard express session
-    if (req.session && req.session.userId && req.session.role) {
-      console.log("Check-auth: Session authenticated", req.sessionID);
-      
-      // Get user details from database based on role
-      const role = req.session.role;
-      const userId = req.session.userId;
-      
-      let userData = {
-        id: userId,
-        role: role,
-        firstName: req.session.firstName,
-        lastName: req.session.lastName
-      };
-      
-      // Get additional user info from database if needed
-      if (role === 'teacher') {
-        const [teacherRows] = await db.query(
-          "SELECT email FROM teachers WHERE id = ?", 
-          [userId]
-        );
-        
-        if (teacherRows && teacherRows.length > 0) {
-          userData.email = teacherRows[0].email;
-        }
-      } else if (role === 'student') {
-        const [studentRows] = await db.query(
-          "SELECT email, student_id FROM students WHERE id = ?", 
-          [userId]
-        );
-        
-        if (studentRows && studentRows.length > 0) {
-          userData.email = studentRows[0].email;
-          userData.studentId = studentRows[0].student_id;
-        }
-      }
-      
-      // Set explicit cookie with proper settings
-      res.cookie('qr_attendance_sid', req.sessionID, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'none',
-        maxAge: 24 * 60 * 60 * 1000 // 24 hours
-      });
-      
-      return res.json({
-        authenticated: true,
-        user: userData,
-        sessionID: req.sessionID,
-        authMethod: "express-session"
-      });
-    }
-    
-    // Header-based authentication (fallback for when cookies don't work)
+    // STEP 3: As last resort, try header-based authentication
     const headerUserId = req.headers['x-user-id'];
     const headerUserRole = req.headers['x-user-role'];
-    const hasHeaderAuth = headerUserId && headerUserRole;
     
-    if (hasHeaderAuth) {
+    if (headerUserId && headerUserRole) {
       console.log(`Header auth received: User ${headerUserId} (${headerUserRole})`);
+      
+      // Skip header auth if cookie exists but is invalid - prevents creating duplicate sessions
+      if (sessionCookie) {
+        console.log("Skipping header auth because session cookie exists but is invalid");
+        return res.json({
+          authenticated: false,
+          message: "Session expired. Please log in again."
+        });
+      }
       
       const userId = parseInt(headerUserId);
       const role = headerUserRole;
       
-      console.log(`Attempting header-based auth for user ${userId} (${role})`);
-      
-      // Get user details from database based on role
+      // Get user details from database
       let userData = null;
       
       if (role === 'teacher') {
@@ -646,98 +658,93 @@ router.get("/check-auth", async (req, res) => {
       if (userData) {
         console.log(`Header-based auth successful for user ${userId} (${role})`);
         
-        // IMPROVED SESSION HANDLING: Check for existing sessions before creating a new one
+        // Check for existing active sessions for this user
         try {
-          // First check for existing active sessions for this user
           const [existingSessions] = await db.query(
-            `SELECT session_id, expires_at > NOW() as is_active, data 
-             FROM sessions 
-             WHERE user_id = ? AND role = ? AND is_active = TRUE 
+            `SELECT session_id FROM sessions 
+             WHERE user_id = ? AND role = ? AND is_active = TRUE AND expires_at > NOW()
              ORDER BY created_at DESC LIMIT 1`,
             [userId, role]
           );
           
-          let sessionId = req.sessionID;
-          
-          if (existingSessions.length > 0 && existingSessions[0].is_active) {
-            // Use the most recent session instead of creating a new one
-            sessionId = existingSessions[0].session_id;
-            console.log(`Found existing active session: ${sessionId} - reusing instead of creating new one`);
+          if (existingSessions.length > 0) {
+            const existingSessionId = existingSessions[0].session_id;
+            console.log(`Found existing active session: ${existingSessionId} - reusing it`);
             
-            // Parse the existing session data
-            try {
-              const sessionData = JSON.parse(existingSessions[0].data || '{}');
-              
-              // Update the current session with the existing data
-              req.session.userId = userId;
-              req.session.role = role;
-              req.session.firstName = userData.firstName;
-              req.session.lastName = userData.lastName;
-              
-              if (sessionData.email) req.session.email = sessionData.email;
-              
-              // Update last activity for the existing session
-          await db.query(
-            `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
-            [sessionId]
-          );
-            } catch (parseError) {
-              console.error("Error parsing existing session data:", parseError);
-              // Continue with basic session data
-            }
-          } else {
-            // No active session found, create a new one
-            console.log("No active session found, creating new session from header auth");
+            // Update session last activity
+            await db.query(
+              "UPDATE sessions SET last_activity = NOW() WHERE session_id = ?",
+              [existingSessionId]
+            );
             
-            // Create a new session for this user
-            req.session.userId = userData.id;
-            req.session.role = role;
-            req.session.firstName = userData.firstName;
-            req.session.lastName = userData.lastName;
-            
-            // Save the session explicitly
-            await new Promise((resolve, reject) => {
-              req.session.save(err => {
-                if (err) {
-                  console.error("Error saving session:", err);
-                  reject(err);
-                } else {
-                  console.log("Created new session from header auth:", req.sessionID);
-                  resolve();
-                }
-              });
+            // Set cookie with the EXISTING session ID
+            const isProd = process.env.NODE_ENV === 'production';
+            res.cookie('qr_attendance_sid', existingSessionId, {
+              httpOnly: true,
+              secure: isProd,
+              sameSite: isProd ? 'none' : 'lax',
+              maxAge: 24 * 60 * 60 * 1000 // 24 hours
             });
             
-            // Store session in database manually 
-            await db.query(
-              `INSERT INTO sessions (session_id, user_id, role, data, is_active, expires_at, created_at, last_activity)
-               VALUES (?, ?, ?, ?, TRUE, DATE_ADD(NOW(), INTERVAL 1 DAY), NOW(), NOW())
-               ON DUPLICATE KEY UPDATE is_active = TRUE, expires_at = DATE_ADD(NOW(), INTERVAL 1 DAY), last_activity = NOW(), data = VALUES(data)`,
-              [req.sessionID, userData.id, role, JSON.stringify(req.session)]
-            );
+            return res.json({
+              authenticated: true,
+              user: userData,
+              sessionID: existingSessionId,
+              authMethod: "session",
+              message: "Authenticated via headers, using existing session"
+            });
           }
           
-          // Set cookie explicitly with proper settings
-          const isProd = process.env.NODE_ENV === 'production';
-          res.cookie('qr_attendance_sid', sessionId, {
-            httpOnly: true,
-            secure: isProd,
-            sameSite: isProd ? 'none' : 'lax',
-            maxAge: 24 * 60 * 60 * 1000 // 24 hours
+          // If we reach here, there are no existing sessions, proceed with new session creation
+          // Create a new session for this user
+          req.session.userId = userData.id;
+          req.session.role = role;
+          req.session.firstName = userData.firstName;
+          req.session.lastName = userData.lastName;
+          
+          // Save session explicitly
+          await new Promise((resolve, reject) => {
+            req.session.save(err => {
+              if (err) {
+                console.error("Error saving session:", err);
+                reject(err);
+              } else {
+                console.log("Created new session from header auth:", req.sessionID);
+                resolve();
+              }
+            });
           });
           
-        } catch (sessionError) {
-          console.error("Error handling session during header auth:", sessionError);
-          // Continue with response even if session handling failed
-        }
-        
+          // Store in database
+          const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+          await db.query(
+            `INSERT INTO sessions 
+             (session_id, user_id, role, data, is_active, expires_at, created_at, last_activity)
+             VALUES (?, ?, ?, ?, TRUE, ?, NOW(), NOW())
+             ON DUPLICATE KEY UPDATE is_active = TRUE, expires_at = ?, last_activity = NOW()`,
+            [
+              req.sessionID,
+              userData.id,
+              role,
+              JSON.stringify(req.session),
+              expiresAt,
+              expiresAt
+            ]
+          );
+          
+          console.log(`New session created: ${req.sessionID}`);
+          
           return res.json({
             authenticated: true,
-          user: userData,
-          authMethod: "session",
-          sessionID: req.sessionID,
-          message: "Authenticated via headers"
-        });
+            user: userData,
+            sessionID: req.sessionID,
+            authMethod: "session",
+            message: "Authenticated via headers, created new session"
+          });
+        } catch (sessionError) {
+          console.error("Error handling session during header auth:", sessionError);
+          // Fall through to unauthenticated response
+        }
       } else {
         console.log(`Invalid user ID or role in headers: ${userId} (${role})`);
       }
