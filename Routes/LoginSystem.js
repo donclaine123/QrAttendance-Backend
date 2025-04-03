@@ -190,10 +190,10 @@ router.post('/logout', async (req, res) => {
   console.log('Logout requested - Session ID:', req.sessionID);
   
   try {
-    if (req.session) {
+  if (req.session) {
       // IMPORTANT: Capture user info and session ID BEFORE destroying session
-      const userId = req.session.userId;
-      const role = req.session.role;
+    const userId = req.session.userId;
+    const role = req.session.role;
       const sessionId = req.sessionID;
       
       console.log(`Logging out user ${userId} (${role}) with session ${sessionId}`);
@@ -212,9 +212,9 @@ router.post('/logout', async (req, res) => {
       
       // Now destroy the session in Express
       await new Promise((resolve, reject) => {
-        req.session.destroy(err => {
-          if (err) {
-            console.error('Session destruction error:', err);
+    req.session.destroy(err => {
+      if (err) {
+        console.error('Session destruction error:', err);
             reject(err);
           } else {
             console.log(`Express session destroyed for user ${userId}`);
@@ -247,12 +247,12 @@ router.post('/logout', async (req, res) => {
       return res.json({
         success: true,
         message: 'Logged out successfully'
-      });
-    } else {
-      console.log('No session found during logout attempt');
-      res.json({
-        success: true,
-        message: 'Already logged out'
+    });
+  } else {
+    console.log('No session found during logout attempt');
+    res.json({
+      success: true,
+      message: 'Already logged out'
       });
     }
   } catch (error) {
@@ -690,9 +690,9 @@ router.get("/check-auth", async (req, res) => {
           if (existingSessions.length > 0) {
             const existingSessionId = existingSessions[0].session_id;
             console.log(`Found existing active session: ${existingSessionId} - reusing it`);
-            
-            // Update session last activity
-            await db.query(
+          
+          // Update session last activity
+          await db.query(
               "UPDATE sessions SET last_activity = NOW() WHERE session_id = ?",
               [existingSessionId]
             );
@@ -706,8 +706,8 @@ router.get("/check-auth", async (req, res) => {
               maxAge: 24 * 60 * 60 * 1000 // 24 hours
             });
             
-            return res.json({
-              authenticated: true,
+          return res.json({
+            authenticated: true,
               user: userData,
               sessionID: existingSessionId,
               authMethod: "session",
@@ -1255,7 +1255,7 @@ router.post("/reauth", async (req, res) => {
         res.cookie('qr_attendance_sid', req.sessionID, cookieOptions);
         
         return res.json({
-          success: true,
+      success: true, 
           message: "Session created",
           sessionId: req.sessionID,
           user: {
@@ -1332,6 +1332,114 @@ router.get("/debug-sessions", async (req, res) => {
       success: false,
       message: "Server error while retrieving sessions",
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// Debug endpoint to test cookie handling and session matching
+router.get("/test-cookies", async (req, res) => {
+  try {
+    // Capture all cookies from request
+    const cookies = req.cookies || {};
+    
+    // Get session ID from request (from express-session)
+    const sessionId = req.sessionID;
+    
+    // Check if the cookie session ID matches the express session ID
+    const cookieSessionId = cookies.qr_attendance_sid;
+    const sessionMatch = cookieSessionId === sessionId;
+    
+    // Check if this session exists in the database
+    let sessionExists = false;
+    let sessionData = null;
+    
+    if (sessionId) {
+      const [rows] = await db.query(
+        "SELECT * FROM sessions WHERE session_id = ? AND is_active = TRUE", 
+        [sessionId]
+      );
+      
+      sessionExists = rows.length > 0;
+      if (sessionExists) {
+        sessionData = rows[0];
+      }
+    }
+    
+    // Check for active sessions for current user if authenticated
+    let activeSessions = [];
+    if (req.session && req.session.userId) {
+      const [rows] = await db.query(
+        "SELECT session_id, created_at, last_activity FROM sessions WHERE user_id = ? AND is_active = TRUE", 
+        [req.session.userId]
+      );
+      activeSessions = rows;
+    }
+    
+    // If the session IDs don't match, attempt to fix it
+    if (cookieSessionId && sessionId && cookieSessionId !== sessionId) {
+      console.log(`⚠️ Session ID mismatch: Cookie=${cookieSessionId}, Express=${sessionId}`);
+      
+      // Option 1: Check if the cookie session ID is valid in the database
+      const [cookieSessionRows] = await db.query(
+        "SELECT * FROM sessions WHERE session_id = ? AND is_active = TRUE AND expires_at > NOW()", 
+        [cookieSessionId]
+      );
+      
+      if (cookieSessionRows.length > 0) {
+        // The cookie session is valid, update express session to match
+        console.log(`✅ Cookie session ${cookieSessionId} is valid, updating express session`);
+        
+        // Option to sync: Set a new cookie with the current session ID
+        res.cookie('qr_attendance_sid', sessionId, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+          path: '/',
+          maxAge: 24 * 60 * 60 * 1000 // 24 hours
+        });
+        
+        console.log(`Updated cookie to use current session ID: ${sessionId}`);
+      } else {
+        // The cookie session is not valid, update cookie to match express session
+        console.log(`❌ Cookie session ${cookieSessionId} is not valid, updating cookie to ${sessionId}`);
+        
+        res.cookie('qr_attendance_sid', sessionId, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+          path: '/',
+          maxAge: 24 * 60 * 60 * 1000 // 24 hours
+        });
+      }
+    }
+    
+    // Return debug information
+    res.json({
+      success: true,
+      cookies,
+      sessionId,
+      cookieSessionId,
+      sessionMatch,
+      sessionExists,
+      activeSessions: activeSessions.map(s => ({
+        id: s.session_id,
+        created: s.created_at,
+        lastActivity: s.last_activity,
+        isCurrent: s.session_id === sessionId
+      })),
+      fixApplied: cookieSessionId && sessionId && cookieSessionId !== sessionId,
+      sessionInfo: sessionData ? {
+        user_id: sessionData.user_id,
+        role: sessionData.role,
+        created_at: sessionData.created_at,
+        expires_at: sessionData.expires_at
+      } : null
+    });
+  } catch (error) {
+    console.error("Error in test-cookies:", error);
+    res.status(500).json({
+      success: false,
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Server error'
     });
   }
 });
