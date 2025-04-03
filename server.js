@@ -90,25 +90,33 @@ const sessionMiddleware = session({
   store: sessionStore,
   resave: false,
   saveUninitialized: false,
+  rolling: false, // Prevent session from being saved on every request
   cookie: {
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
-    // Set security based on environment
-    secure: true, // Set to true for proper cross-origin cookies
-    sameSite: 'none' // Critical for cross-origin cookies
+    secure: true,
+    sameSite: 'none'
   }
 });
 
-// Add session collision protection
+// Add session collision protection and prevent new session creation for auth checks
 app.use((req, res, next) => {
-  if (req.session && !req.session.initialized) {
-    req.session.destroy(err => {
-      if (err) console.error('Session destruction error:', err);
-      next();
-    });
-    return;
+  // Skip session for OPTIONS requests
+  if (req.method === 'OPTIONS') {
+    return next();
   }
-  next();
+
+  // Don't create new sessions for auth checks or static resources
+  if ((req.path.includes('/auth/check-auth') || req.path.includes('/static/')) && !req.cookies.qr_attendance_sid) {
+    return next();
+  }
+
+  // Only create new sessions for login or if a valid cookie exists
+  if (!req.cookies.qr_attendance_sid && req.path !== '/auth/login') {
+    return next();
+  }
+
+  sessionMiddleware(req, res, next);
 });
 
 // Check if we're in development or production
