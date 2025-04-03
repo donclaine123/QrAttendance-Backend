@@ -93,20 +93,24 @@ const sessionMiddleware = session({
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
     // Set security based on environment
-    secure: true, // Set to true for proper cross-origin cookies
-    sameSite: 'none' // Critical for cross-origin cookies
+    secure: process.env.NODE_ENV === 'production', // Only true in production
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax' // 'none' for production, 'lax' for development
   }
 });
 
-// Add session collision protection
+// Fix session initialization
 app.use((req, res, next) => {
-  if (req.session && !req.session.initialized) {
-    req.session.destroy(err => {
-      if (err) console.error('Session destruction error:', err);
-      next();
-    });
-    return;
+  // Skip session checks for OPTIONS requests
+  if (req.method === 'OPTIONS') {
+    return next();
   }
+  
+  // Add a timestamp on first initialization to track session age
+  if (req.session && !req.session.initialized) {
+    req.session.initialized = Date.now();
+    // Don't destroy new sessions!
+  }
+  
   next();
 });
 
@@ -276,7 +280,8 @@ async function cleanupDuplicateSessions() {
       console.log(`Invalidated ${expiredResult.affectedRows} expired sessions`);
     }
     
-    // Find all users with multiple active sessions
+    // Rather than removing duplicates automatically, let's just log them
+    // This will help diagnose issues without breaking existing sessions
     const [users] = await db.query(`
       SELECT user_id, role, COUNT(*) as session_count 
       FROM sessions 
@@ -285,14 +290,10 @@ async function cleanupDuplicateSessions() {
       HAVING COUNT(*) > 1
     `);
     
-    console.log(`Found ${users.length} users with multiple active sessions`);
-    
-    let totalInvalidated = 0;
+    console.log(`Found ${users.length} users with multiple active sessions (will preserve all sessions for now)`);
     
     for (const user of users) {
-      console.log(`User ${user.user_id} (${user.role}) has ${user.session_count} active sessions`);
-      
-      // Get all sessions for this user
+      // Just log the sessions without taking destructive action
       const [sessions] = await db.query(`
         SELECT session_id, created_at, last_activity
         FROM sessions
@@ -300,34 +301,11 @@ async function cleanupDuplicateSessions() {
         ORDER BY last_activity DESC, created_at DESC
       `, [user.user_id, user.role]);
       
-      if (sessions.length > 1) {
-        // Keep only the newest session based on last activity time
-        const keepSessionId = sessions[0].session_id;
-        const sessionsToInvalidate = sessions.slice(1).map(s => s.session_id);
-        
-        console.log(`Keeping most recent session ${keepSessionId} (last activity: ${sessions[0].last_activity})`);
-        console.log(`Invalidating ${sessionsToInvalidate.length} older sessions`);
-        
-        if (sessionsToInvalidate.length > 0) {
-          // Log the sessions being invalidated
-          sessions.slice(1).forEach((s, idx) => {
-            console.log(`  Session ${idx+1}: ${s.session_id} (created: ${s.created_at}, last activity: ${s.last_activity})`);
-          });
-          
-          // Invalidate older sessions
-          const [updateResult] = await db.query(`
-            UPDATE sessions
-            SET is_active = FALSE, expires_at = NOW()
-            WHERE session_id IN (?)
-          `, [sessionsToInvalidate]);
-          
-          totalInvalidated += updateResult.affectedRows;
-          console.log(`Successfully invalidated ${updateResult.affectedRows} sessions`);
-        }
-      }
+      console.log(`User ${user.user_id} (${user.role}) has ${sessions.length} active sessions:`);
+      sessions.forEach((s, idx) => {
+        console.log(`  Session ${idx+1}: ${s.session_id} (created: ${s.created_at}, last activity: ${s.last_activity})`);
+      });
     }
-    
-    console.log(`🧹 Session cleanup complete. Total invalidated: ${totalInvalidated}`);
     
     // Count remaining active sessions
     const [countResult] = await db.query(
@@ -336,46 +314,6 @@ async function cleanupDuplicateSessions() {
     
     if (countResult[0]?.total > 0) {
       console.log(`ℹ️ Current active sessions: ${countResult[0].total}`);
-    }
-    
-    // Run another verification to ensure each user has only one active session
-    const [duplicateCheck] = await db.query(`
-      SELECT user_id, role, COUNT(*) as session_count 
-      FROM sessions 
-      WHERE is_active = TRUE 
-      GROUP BY user_id, role 
-      HAVING COUNT(*) > 1
-    `);
-    
-    if (duplicateCheck.length > 0) {
-      console.log(`⚠️ Warning: Still found ${duplicateCheck.length} users with multiple sessions after cleanup`);
-      // Force cleanup again with more aggressive approach if needed
-      for (const user of duplicateCheck) {
-        console.log(`Force cleanup for user ${user.user_id} (${user.role})`);
-        
-        // Get the most recently active session
-        const [mostRecent] = await db.query(`
-          SELECT session_id FROM sessions
-          WHERE user_id = ? AND role = ? AND is_active = TRUE
-          ORDER BY last_activity DESC, created_at DESC
-          LIMIT 1
-        `, [user.user_id, user.role]);
-        
-        if (mostRecent.length > 0) {
-          const keepId = mostRecent[0].session_id;
-          
-          // Force invalidate ALL other sessions for this user
-          await db.query(`
-            UPDATE sessions 
-            SET is_active = FALSE, expires_at = NOW()
-            WHERE user_id = ? AND role = ? AND session_id != ? AND is_active = TRUE
-          `, [user.user_id, user.role, keepId]);
-          
-          console.log(`Forced cleanup complete for user ${user.user_id}`);
-        }
-      }
-    } else {
-      console.log(`✅ Verification complete: Each user has at most one active session`);
     }
   } catch (error) {
     console.error('❌ Error cleaning up sessions:', error);
