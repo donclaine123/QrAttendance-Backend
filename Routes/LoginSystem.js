@@ -146,8 +146,8 @@ router.post("/login", async (req, res) => {
           httpOnly: true,
           path: '/',
           maxAge: 24 * 60 * 60 * 1000, // 24 hours
-          secure: isProd, // true in production
-          sameSite: isProd ? 'none' : 'lax' // 'none' in production
+          secure: true, // Always true for HTTPS
+          sameSite: 'none' // Required for cross-origin
         };
         
         // Log cookie settings for debugging
@@ -160,16 +160,31 @@ router.post("/login", async (req, res) => {
         
         res.cookie('qr_attendance_sid', req.sessionID, cookieOptions);
         
+        // Create a cross-origin-friendly authentication token
+        // This will be used as fallback when cookies don't work
+        const authToken = {
+          userId: user.id,
+          role: role,
+          firstName: user.first_name,
+          lastName: user.last_name,
+          email: email,
+          sessionId: req.sessionID
+        };
+        
         // Return user data and session info
         return res.json({ 
-      success: true,
-      role,
-      user: {
-        id: user.id,
-        firstName: user.first_name,
+          success: true,
+          role,
+          user: {
+            id: user.id,
+            firstName: user.first_name,
             lastName: user.last_name,
             email: email
-      },
+          },
+          // Include these fields for localStorage authentication
+          userId: user.id,
+          userRole: role,
+          authToken: authToken,
           sessionId: req.sessionID,
           redirect: role === 'teacher' ? '/pages/teacher-dashboard.html' : '/pages/student-dashboard.html'
         });
@@ -1351,6 +1366,90 @@ router.post("/reauth", async (req, res) => {
       message: "Server error during re-authentication" 
     });
   }
+});
+
+// Add this new endpoint to support re-authentication when cookies are blocked by the browser
+// This will be used as a fallback when third-party cookies are blocked by the browser
+router.post('/reauth', async (req, res) => {
+    try {
+        const { userId, role } = req.body;
+        
+        if (!userId || !role) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'User ID and role are required for re-authentication'
+            });
+        }
+        
+        // Validate the userId and role
+        // For security, we need to check this against our database
+        const userQuery = role === 'teacher' 
+            ? 'SELECT * FROM teachers WHERE id = ?'
+            : 'SELECT * FROM students WHERE id = ?';
+        
+        const [users] = await db.query(userQuery, [userId]);
+        
+        if (users.length === 0) {
+            return res.status(401).json({
+                success: false,
+                message: 'Invalid user credentials'
+            });
+        }
+        
+        const user = users[0];
+        
+        // Create a new session or regenerate the existing one
+        req.session.regenerate((err) => {
+            if (err) {
+                console.error('Session regeneration error:', err);
+                return res.status(500).json({ 
+                    success: false, 
+                    message: 'Failed to create session'
+                });
+            }
+            
+            // Set session data
+            req.session.userId = userId;
+            req.session.userRole = role;
+            req.session.authenticated = true;
+            
+            // Log the new session
+            console.log(`Re-authentication successful. New session created: ${req.session.id} for user ${userId} (${role})`);
+            
+            // Ensure the session is saved before responding
+            req.session.save((err) => {
+                if (err) {
+                    console.error('Session save error:', err);
+                    return res.status(500).json({ 
+                        success: false, 
+                        message: 'Failed to save session'
+                    });
+                }
+                
+                // Send both session cookie AND auth token for maximum compatibility
+                const userData = {
+                    id: user.id,
+                    name: user.name,
+                    email: user.email,
+                    role: role
+                };
+                
+                res.status(200).json({
+                    success: true,
+                    message: 'Re-authentication successful',
+                    user: userData,
+                    sessionId: req.session.id
+                });
+            });
+        });
+    } catch (error) {
+        console.error('Re-authentication error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to re-authenticate',
+            error: error.message
+        });
+    }
 });
 
 module.exports = router;

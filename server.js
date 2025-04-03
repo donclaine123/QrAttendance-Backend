@@ -575,6 +575,50 @@ app.get('/auth/debug-headers', (req, res) => {
   });
 });
 
+// Add debugging route for cookies
+app.get('/debug/cookies', (req, res) => {
+  // Get all cookies sent by browser
+  const receivedCookies = req.cookies;
+  
+  // Current session ID if available
+  const sessionId = req.session && req.session.id;
+  
+  // Set a test cookie
+  const cookieOptions = {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'none',
+    path: '/'
+  };
+  
+  res.cookie('server_test_cookie', 'test_value', cookieOptions);
+  
+  // Prepare response
+  const response = {
+    success: true,
+    message: 'Cookie debug information',
+    sessionId: sessionId,
+    cookiesReceived: receivedCookies,
+    sessionData: req.session ? {
+      id: req.session.id,
+      cookie: req.session.cookie,
+      authenticated: req.session.authenticated,
+      userId: req.session.userId,
+      userRole: req.session.userRole
+    } : null,
+    cookiesSet: [
+      `server_test_cookie=test_value; HttpOnly; Secure; SameSite=None; Path=/`
+    ]
+  };
+  
+  // For debugging
+  console.log('Debug cookies endpoint called');
+  console.log('Cookies received:', receivedCookies);
+  console.log('Session:', req.session ? req.session.id : 'No session');
+  
+  res.json(response);
+});
+
 // Error handling
 app.use((err, req, res, next) => {
   console.error('Server error:', err.message);
