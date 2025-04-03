@@ -1,19 +1,19 @@
 async function checkAuth(req, res) {
   try {
-    // Add session cleanup
-    if (req.session && req.session.userId) {
-      await req.session.reload();
+    // Force session reload from store
+    await req.session.reload();
+    
+    if (!req.session.userId || req.sessionID !== req.cookies.qr_attendance_sid) {
+      await req.session.destroy();
+      return res.json({ authenticated: false });
     }
     
-    if (req.session?.user) {
-      res.json({ authenticated: true, user: req.session.user });
-    } else {
-      // Destroy any stale session
-      await new Promise((resolve) => req.session.destroy(resolve));
-      res.json({ authenticated: false });
-    }
+    return res.json({
+      authenticated: true,
+      user: req.session.user
+    });
   } catch (error) {
-    console.error("Auth check error:", error);
-    res.status(500).json({ error: "Authentication check failed" });
+    await req.session.destroy();
+    res.json({ authenticated: false });
   }
 }
