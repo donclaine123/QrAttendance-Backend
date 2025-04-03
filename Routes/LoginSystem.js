@@ -420,6 +420,10 @@ router.get("/check-auth", async (req, res) => {
   try {
     console.log("Check-auth request - Session ID:", req.sessionID);
     console.log("Check-auth request - Cookies:", req.headers.cookie || 'none');
+    console.log("Check-auth request - Headers:", {
+      'x-user-id': req.headers['x-user-id'] || 'not set',
+      'x-user-role': req.headers['x-user-role'] || 'not set'
+    });
     
     // Header-based authentication (fallback for when cookies don't work)
     const headerUserId = req.headers['x-user-id'];
@@ -430,7 +434,7 @@ router.get("/check-auth", async (req, res) => {
       console.log(`Header auth received: User ${headerUserId} (${headerUserRole})`);
     }
     
-    // Check for active session
+    // Check for active session first
     if (req.session && req.session.userId && req.session.role) {
       console.log("Check-auth: Session authenticated", req.sessionID);
       
@@ -479,6 +483,8 @@ router.get("/check-auth", async (req, res) => {
       const userId = parseInt(headerUserId);
       const role = headerUserRole;
       
+      console.log(`Attempting header-based auth for user ${userId} (${role})`);
+      
       // Get user details from database based on role
       let userData = null;
       
@@ -518,28 +524,16 @@ router.get("/check-auth", async (req, res) => {
       if (userData) {
         console.log(`Header-based auth successful for user ${userId} (${role})`);
         
-        // Set up a session since we have valid credentials
-        req.session.userId = userData.id;
-        req.session.role = role;
-        req.session.firstName = userData.firstName;
-        req.session.lastName = userData.lastName;
-        req.session.email = userData.email;
-        
-        // Save the session (but don't wait for it to complete)
-        req.session.save(err => {
-          if (err) {
-            console.error("Error saving session during header auth:", err);
-          } else {
-            console.log("Session created from header auth:", req.sessionID);
-          }
-        });
-        
+        // Don't create a new session - just return authenticated with user data
+        // This prevents creating multiple sessions and keeps authentication lightweight
         return res.json({
           authenticated: true,
           user: userData,
-          sessionID: req.sessionID,
-          restored: true
+          restored: true,
+          message: "Authenticated via headers"
         });
+      } else {
+        console.log(`Invalid user ID or role in headers: ${userId} (${role})`);
       }
     }
     
