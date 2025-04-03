@@ -4,8 +4,11 @@ const crypto = require("crypto");
 const db = require("../db");
 const { authenticate, requireRole } = require("./authMiddleware");
 
+// Apply middleware to all protected routes
+router.use(authenticate);
+
 // Generate QR Code
-router.post("/generate-qr", authenticate, requireRole('teacher'), async (req, res) => {
+router.post("/generate-qr", requireRole('teacher'), async (req, res) => {
   try {
     const { subject, class_id, teacher_id } = req.body;
     
@@ -78,7 +81,7 @@ router.post("/generate-qr", authenticate, requireRole('teacher'), async (req, re
 });
 
 // Get active sessions for teacher
-router.get("/sessions", authenticate, requireRole('teacher'), async (req, res) => {
+router.get("/sessions", requireRole('teacher'), async (req, res) => {
   try {
     const [sessions] = await db.query(
       `SELECT 
@@ -109,7 +112,7 @@ router.get("/sessions", authenticate, requireRole('teacher'), async (req, res) =
 });
 
 // Invalidate a session
-router.delete("/sessions/:sessionId", authenticate, requireRole('teacher'), async (req, res) => {
+router.delete("/sessions/:sessionId", requireRole('teacher'), async (req, res) => {
   try {
     const [result] = await db.query(
       `UPDATE qr_sessions 
@@ -140,7 +143,7 @@ router.delete("/sessions/:sessionId", authenticate, requireRole('teacher'), asyn
 });
 
 // Get classes for a teacher
-router.get("/teacher-classes/:teacherId", authenticate, requireRole('teacher'), async (req, res) => {
+router.get("/teacher-classes/:teacherId", requireRole('teacher'), async (req, res) => {
   try {
     const teacherId = req.params.teacherId;
     
@@ -199,7 +202,7 @@ router.get("/teacher-classes/:teacherId", authenticate, requireRole('teacher'), 
 });
 
 // Add a new class
-router.post("/classes", authenticate, requireRole('teacher'), async (req, res) => {
+router.post("/classes", requireRole('teacher'), async (req, res) => {
   try {
     const { name, subject, description } = req.body;
     const teacherId = req.user.id;
@@ -249,7 +252,7 @@ router.post("/classes", authenticate, requireRole('teacher'), async (req, res) =
 });
 
 // Delete a class (soft delete - mark as inactive)
-router.delete("/classes/:classId", authenticate, requireRole('teacher'), async (req, res) => {
+router.delete("/classes/:classId", requireRole('teacher'), async (req, res) => {
   try {
     const classId = req.params.classId;
     const teacherId = req.user.id;
@@ -285,7 +288,7 @@ router.delete("/classes/:classId", authenticate, requireRole('teacher'), async (
 });
 
 // Get attendance records for a specific session
-router.get("/attendance/:sessionId", authenticate, requireRole('teacher'), async (req, res) => {
+router.get("/attendance/:sessionId", requireRole('teacher'), async (req, res) => {
   try {
     const sessionId = req.params.sessionId;
     const teacherId = req.user.id;
@@ -371,7 +374,7 @@ router.get("/attendance/:sessionId", authenticate, requireRole('teacher'), async
 });
 
 // Get sessions for a specific class
-router.get("/class-sessions/:classId", authenticate, requireRole('teacher'), async (req, res) => {
+router.get("/class-sessions/:classId", requireRole('teacher'), async (req, res) => {
   try {
     const classId = req.params.classId;
     const teacherId = req.user.id;
