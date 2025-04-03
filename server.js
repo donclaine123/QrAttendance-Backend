@@ -40,7 +40,22 @@ app.use(cookieParser());
 // Configure CORS with very permissive settings for development
 app.use(
   cors({
-    origin: ["http://localhost:5500", "http://localhost:3000", "http://127.0.0.1:5500", "https://splendorous-paprenjak-09a988.netlify.app"],
+    origin: function(origin, callback) {
+      const allowedOrigins = [
+        "http://localhost:5500", 
+        "http://localhost:3000", 
+        "http://127.0.0.1:5500", 
+        "https://splendorous-paprenjak-09a988.netlify.app"
+      ];
+      
+      // Allow requests with no origin (like mobile apps, curl, etc)
+      if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+        callback(null, origin);
+      } else {
+        console.log(`Origin ${origin} not allowed by CORS`);
+        callback(null, false);
+      }
+    },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Cache-Control", "X-User-ID", "X-User-Role"],
@@ -72,13 +87,14 @@ const sessionMiddleware = session({
   key: 'qr_attendance_sid',
   secret: process.env.SESSION_SECRET || crypto.randomBytes(64).toString('hex'),
   store: sessionStore,
-  resave: false,  // Keep false to prevent duplicate saves
-  saveUninitialized: false,  // Keep false to avoid empty sessions
+  resave: false,
+  saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'none',
-    maxAge: 24 * 60 * 60 * 1000
+    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    // Set security based on environment
+    secure: true, // Set to true for proper cross-origin cookies
+    sameSite: 'none' // Critical for cross-origin cookies
   }
 });
 
@@ -244,6 +260,66 @@ async function cleanupExpiredSessions() {
   setTimeout(cleanupExpiredSessions, 30 * 60 * 1000); // Every 30 minutes
 }
 
+// Add function to clean up duplicate sessions on startup
+async function cleanupDuplicateSessions() {
+  try {
+    console.log("🧹 Starting cleanup of duplicate sessions...");
+    
+    // Find all users with multiple active sessions
+    const [users] = await db.query(`
+      SELECT user_id, role, COUNT(*) as session_count 
+      FROM sessions 
+      WHERE is_active = TRUE 
+      GROUP BY user_id, role 
+      HAVING COUNT(*) > 1
+    `);
+    
+    console.log(`Found ${users.length} users with multiple active sessions`);
+    
+    for (const user of users) {
+      console.log(`User ${user.user_id} (${user.role}) has ${user.session_count} active sessions`);
+      
+      // Get all sessions for this user
+      const [sessions] = await db.query(`
+        SELECT session_id, created_at
+        FROM sessions
+        WHERE user_id = ? AND role = ? AND is_active = TRUE
+        ORDER BY created_at DESC
+      `, [user.user_id, user.role]);
+      
+      if (sessions.length > 1) {
+        // Keep only the newest session
+        const keepSessionId = sessions[0].session_id;
+        const sessionsToInvalidate = sessions.slice(1).map(s => s.session_id);
+        
+        console.log(`Keeping newest session ${keepSessionId}, invalidating ${sessionsToInvalidate.length} older sessions`);
+        
+        if (sessionsToInvalidate.length > 0) {
+          await db.query(`
+            UPDATE sessions
+            SET is_active = FALSE, expires_at = NOW()
+            WHERE session_id IN (?)
+          `, [sessionsToInvalidate]);
+          
+          console.log(`Successfully invalidated older sessions for user ${user.user_id}`);
+        }
+      }
+    }
+    
+    console.log("✅ Duplicate session cleanup completed");
+  } catch (error) {
+    console.error("❌ Error cleaning up duplicate sessions:", error);
+  }
+}
+
+// Run cleanup on server startup
+console.log("Running session cleanup on startup...");
+cleanupExpiredSessions().then(() => {
+  cleanupDuplicateSessions().then(() => {
+    console.log("Initial session cleanup completed");
+  });
+});
+
 // Add function to completely reset all sessions for a user
 async function resetAllSessionsForUser(userId, role) {
   try {
@@ -297,9 +373,6 @@ app.post('/auth/reset-all-sessions', async (req, res) => {
     });
   }
 });
-
-// Run an immediate cleanup to handle existing duplicate sessions
-cleanupExpiredSessions();
 
 // API routes
 app.use("/auth", loginSystem);  

@@ -425,16 +425,93 @@ router.get("/check-auth", async (req, res) => {
       'x-user-role': req.headers['x-user-role'] || 'not set'
     });
     
-    // Header-based authentication (fallback for when cookies don't work)
-    const headerUserId = req.headers['x-user-id'];
-    const headerUserRole = req.headers['x-user-role'];
-    const hasHeaderAuth = headerUserId && headerUserRole;
+    // Get session cookie directly to validate
+    const sessionCookie = req.cookies?.qr_attendance_sid || (req.headers.cookie || '')
+      .split(';')
+      .map(c => c.trim())
+      .find(c => c.startsWith('qr_attendance_sid='))
+      ?.split('=')[1];
     
-    if (hasHeaderAuth) {
-      console.log(`Header auth received: User ${headerUserId} (${headerUserRole})`);
+    if (sessionCookie) {
+      console.log(`Found session cookie: ${sessionCookie}`);
+      
+      // Check if this session exists in the database
+      try {
+        const [sessionRows] = await db.query(
+          "SELECT * FROM sessions WHERE session_id = ? AND expires_at > NOW() AND is_active = TRUE", 
+          [sessionCookie]
+        );
+        
+        if (sessionRows && sessionRows.length > 0) {
+          console.log(`Session found in database: ${sessionCookie}`);
+          
+          // Use the user_id and role from the verified session
+          const userId = sessionRows[0].user_id;
+          const role = sessionRows[0].role;
+          
+          // Get user details from database
+          let userData = {
+            id: userId,
+            role: role
+          };
+          
+          // Get additional info based on role
+          if (role === 'teacher') {
+            const [teacherRows] = await db.query(
+              "SELECT first_name, last_name, email FROM teachers WHERE id = ?", 
+              [userId]
+            );
+            
+            if (teacherRows.length > 0) {
+              userData.firstName = teacherRows[0].first_name;
+              userData.lastName = teacherRows[0].last_name;
+              userData.email = teacherRows[0].email;
+            }
+          } else if (role === 'student') {
+            const [studentRows] = await db.query(
+              "SELECT first_name, last_name, email, student_id FROM students WHERE id = ?", 
+              [userId]
+            );
+            
+            if (studentRows.length > 0) {
+              userData.firstName = studentRows[0].first_name;
+              userData.lastName = studentRows[0].last_name;
+              userData.email = studentRows[0].email;
+              userData.studentId = studentRows[0].student_id;
+            }
+          }
+          
+          // Ensure the session is attached to the request
+          req.session.userId = userId;
+          req.session.role = role;
+          req.session.firstName = userData.firstName;
+          req.session.lastName = userData.lastName;
+          
+          console.log(`Session authentication successful for user ${userId} (${role})`);
+          
+          // Set explicit cookie with proper settings
+          res.cookie('qr_attendance_sid', sessionCookie, {
+            httpOnly: true,
+            secure: true,
+            sameSite: 'none',
+            maxAge: 24 * 60 * 60 * 1000 // 24 hours
+          });
+          
+          return res.json({
+            authenticated: true,
+            user: userData,
+            sessionID: sessionCookie,
+            authMethod: "session"
+          });
+        } else {
+          console.log(`Session cookie ${sessionCookie} not found in database or expired`);
+        }
+      } catch (dbError) {
+        console.error("Error checking session in database:", dbError);
+      }
     }
     
-    // Check for active session first
+    // Check for standard express session
     if (req.session && req.session.userId && req.session.role) {
       console.log("Check-auth: Session authenticated", req.sessionID);
       
@@ -471,15 +548,30 @@ router.get("/check-auth", async (req, res) => {
         }
       }
       
+      // Set explicit cookie with proper settings
+      res.cookie('qr_attendance_sid', req.sessionID, {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'none',
+        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+      });
+      
       return res.json({
         authenticated: true,
         user: userData,
-        sessionID: req.sessionID
+        sessionID: req.sessionID,
+        authMethod: "express-session"
       });
     }
     
-    // If no session, try header-based auth as fallback
+    // Header-based authentication (fallback for when cookies don't work)
+    const headerUserId = req.headers['x-user-id'];
+    const headerUserRole = req.headers['x-user-role'];
+    const hasHeaderAuth = headerUserId && headerUserRole;
+    
     if (hasHeaderAuth) {
+      console.log(`Header auth received: User ${headerUserId} (${headerUserRole})`);
+      
       const userId = parseInt(headerUserId);
       const role = headerUserRole;
       
@@ -524,13 +616,43 @@ router.get("/check-auth", async (req, res) => {
       if (userData) {
         console.log(`Header-based auth successful for user ${userId} (${role})`);
         
-        // Don't create a new session - just return authenticated with user data
-        // This prevents creating multiple sessions and keeps authentication lightweight
-          return res.json({
-            authenticated: true,
+        // Create a new session for this user to prioritize session auth next time
+        req.session.userId = userData.id;
+        req.session.role = role;
+        req.session.firstName = userData.firstName;
+        req.session.lastName = userData.lastName;
+        
+        // Save the session explicitly
+        req.session.save(err => {
+          if (err) {
+            console.error("Error saving session:", err);
+          } else {
+            console.log("Created new session from header auth:", req.sessionID);
+            
+            // Store session in database manually to ensure it's there
+            db.query(
+              `INSERT INTO sessions (session_id, user_id, role, is_active, expires_at, created_at, last_activity)
+               VALUES (?, ?, ?, TRUE, DATE_ADD(NOW(), INTERVAL 1 DAY), NOW(), NOW())
+               ON DUPLICATE KEY UPDATE is_active = TRUE, expires_at = DATE_ADD(NOW(), INTERVAL 1 DAY), last_activity = NOW()`,
+              [req.sessionID, userData.id, role]
+            ).catch(err => console.error("Error storing session:", err));
+          }
+        });
+        
+        // Set cookie explicitly with proper settings
+        res.cookie('qr_attendance_sid', req.sessionID, {
+          httpOnly: true,
+          secure: true,
+          sameSite: 'none',
+          maxAge: 24 * 60 * 60 * 1000 // 24 hours
+        });
+        
+        return res.json({
+          authenticated: true,
           user: userData,
           restored: true,
-          message: "Authenticated via headers"
+          sessionID: req.sessionID,
+          message: "Authenticated via headers, created session"
         });
       } else {
         console.log(`Invalid user ID or role in headers: ${userId} (${role})`);
@@ -538,14 +660,14 @@ router.get("/check-auth", async (req, res) => {
     }
     
     console.log("Check-auth: Not authenticated");
-    return res.json({
-      authenticated: false,
-      message: "No valid session found"
+    return res.json({ 
+      authenticated: false, 
+      message: "No valid session found" 
     });
   } catch (error) {
     console.error("Check auth error:", error);
     res.status(500).json({ 
-      authenticated: false,
+      authenticated: false, 
       message: "Server error during authentication check",
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
