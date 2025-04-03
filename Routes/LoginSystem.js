@@ -1276,5 +1276,65 @@ router.post("/reauth", async (req, res) => {
   }
 });
 
+// Debug endpoint to get active sessions for a user
+router.get("/debug-sessions", async (req, res) => {
+  try {
+    const { userId } = req.query;
+    
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        message: "userId parameter is required"
+      });
+    }
+    
+    // Find all sessions for this user
+    const [sessions] = await db.query(
+      `SELECT session_id, role, created_at, last_activity, expires_at, is_active
+       FROM sessions 
+       WHERE user_id = ? 
+       ORDER BY last_activity DESC`,
+      [userId]
+    );
+    
+    // Get current active sessions for this user
+    const [activeSessions] = await db.query(
+      `SELECT session_id, role, created_at, last_activity, expires_at
+       FROM sessions 
+       WHERE user_id = ? AND is_active = TRUE AND expires_at > NOW()
+       ORDER BY last_activity DESC`,
+      [userId]
+    );
+    
+    // Count current and expired sessions
+    const [counts] = await db.query(
+      `SELECT 
+         COUNT(*) as total,
+         SUM(CASE WHEN is_active = TRUE AND expires_at > NOW() THEN 1 ELSE 0 END) as active,
+         SUM(CASE WHEN is_active = FALSE OR expires_at <= NOW() THEN 1 ELSE 0 END) as expired
+       FROM sessions 
+       WHERE user_id = ?`,
+      [userId]
+    );
+    
+    // Return the information
+    return res.json({
+      success: true,
+      userId,
+      currentSessionId: req.sessionID,
+      sessionCounts: counts[0] || { total: 0, active: 0, expired: 0 },
+      activeSessions: activeSessions,
+      allSessions: sessions,
+    });
+  } catch (error) {
+    console.error("Error in debug-sessions:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error while retrieving sessions",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 module.exports = router;
 
