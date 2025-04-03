@@ -584,23 +584,51 @@ router.get("/teacher-classes/:teacherId", async (req, res) => {
       });
     }
     
-    const [rows] = await db.query(
-      "SELECT classes.id, classes.name, classes.description, classes.subject, " +
-      "COUNT(DISTINCT class_sessions.id) as session_count, " +
-      "COUNT(DISTINCT attendances.id) as total_attendances " +
-      "FROM classes " +
-      "LEFT JOIN class_sessions ON classes.id = class_sessions.class_id " +
-      "LEFT JOIN attendances ON class_sessions.id = attendances.session_id " +
-      "WHERE classes.teacher_id = ? " +
-      "GROUP BY classes.id " +
-      "ORDER BY classes.name ASC",
-      [teacherId]
-    );
+    // Log the SQL query for debugging
+    console.log(`Fetching classes for teacher ID: ${teacherId}`);
     
-    res.json({
-      success: true,
-      classes: rows
-    });
+    try {
+      // Query using the correct table name class_records instead of classes
+      const [rows] = await db.query(
+        `SELECT cr.id, cr.class_name as name, cr.description, cr.subject,
+         COUNT(DISTINCT qs.id) as session_count, 
+         COUNT(DISTINCT a.id) as total_attendances 
+         FROM class_records cr
+         LEFT JOIN qr_sessions qs ON cr.id = qs.class_id 
+         LEFT JOIN attendance a ON qs.session_id = a.session_id 
+         WHERE cr.teacher_id = ? AND cr.is_active = TRUE
+         GROUP BY cr.id 
+         ORDER BY cr.class_name ASC`,
+        [teacherId]
+      );
+      
+      console.log(`Found ${rows.length} classes for teacher ${teacherId}`);
+      
+      res.json({
+        success: true,
+        classes: rows
+      });
+    } catch (queryError) {
+      console.error("Database query error:", queryError);
+      // Fallback to a simpler query if the join is causing issues
+      console.log("Trying fallback query...");
+      
+      const [basicRows] = await db.query(
+        `SELECT id, class_name as name, description, subject
+         FROM class_records 
+         WHERE teacher_id = ? AND is_active = TRUE
+         ORDER BY class_name ASC`,
+        [teacherId]
+      );
+      
+      console.log(`Found ${basicRows.length} classes in fallback query`);
+      
+      res.json({
+        success: true,
+        classes: basicRows,
+        usedFallback: true
+      });
+    }
   } catch (error) {
     console.error("Error fetching teacher classes:", error);
     res.status(500).json({

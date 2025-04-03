@@ -72,15 +72,26 @@ const sessionMiddleware = session({
   key: 'qr_attendance_sid',
   secret: process.env.SESSION_SECRET || crypto.randomBytes(64).toString('hex'),
   store: sessionStore,
-  resave: false,
-  saveUninitialized: false,
+  resave: false,  // Keep false to prevent duplicate saves
+  saveUninitialized: false,  // Keep false to avoid empty sessions
   cookie: {
     httpOnly: true,
-    maxAge: 24 * 60 * 60 * 1000, // 24 hours
-    // Set security based on environment
-    secure: process.env.NODE_ENV === 'production', // true in production
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax' // none in production
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'none',
+    maxAge: 24 * 60 * 60 * 1000
   }
+});
+
+// Add session collision protection
+app.use((req, res, next) => {
+  if (req.session && !req.session.initialized) {
+    req.session.destroy(err => {
+      if (err) console.error('Session destruction error:', err);
+      next();
+    });
+    return;
+  }
+  next();
 });
 
 // Check if we're in development or production
