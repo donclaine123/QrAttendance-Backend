@@ -822,13 +822,14 @@ router.get("/test-cookie", (req, res) => {
 // 📌 Debug route to check cookies
 router.get("/debug-cookies", (req, res) => {
   console.log("Cookies received:", req.cookies);
-  console.log("Session ID from cookies:", req.cookies.sessionId);
+  
+  // Don't create or use req.sessionID which can create a new session
+  const sessionCookie = req.cookies.qr_attendance_sid || null;
   
   res.json({
     cookies: req.cookies,
-    sessionCookie: req.cookies.sessionId,
-    sessionExists: !!req.session,
-    sessionId: req.sessionID
+    sessionExists: !!sessionCookie,
+    sessionId: sessionCookie // Return the actual cookie value, not req.sessionID
   });
 });
 
@@ -988,16 +989,14 @@ router.get('/debug-cookies', (req, res) => {
   console.log('Debug cookies endpoint called');
   console.log('Cookies received:', req.cookies);
   
+  // Don't create or use req.sessionID which can create a new session
+  const sessionCookie = req.cookies.qr_attendance_sid || null;
+  
   res.json({
     success: true,
     cookies: req.cookies || {},
-    signedCookies: req.signedCookies || {},
-    sessionID: req.sessionID,
-    headers: {
-      cookie: req.headers.cookie,
-      origin: req.headers.origin,
-      referer: req.headers.referer
-    }
+    sessionExists: !!sessionCookie,
+    sessionId: sessionCookie // Return the actual cookie value, not req.sessionID
   });
 });
 
