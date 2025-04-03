@@ -162,14 +162,14 @@ router.post("/login", async (req, res) => {
         
         // Return user data and session info
         return res.json({ 
-          success: true,
-          role,
-          user: {
-            id: user.id,
-            firstName: user.first_name,
+      success: true,
+      role,
+      user: {
+        id: user.id,
+        firstName: user.first_name,
             lastName: user.last_name,
             email: email
-          },
+      },
           sessionId: req.sessionID,
           redirect: role === 'teacher' ? '/pages/teacher-dashboard.html' : '/pages/student-dashboard.html'
         });
@@ -675,10 +675,10 @@ router.get("/check-auth", async (req, res) => {
               if (sessionData.email) req.session.email = sessionData.email;
               
               // Update last activity for the existing session
-              await db.query(
-                `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
-                [sessionId]
-              );
+          await db.query(
+            `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
+            [sessionId]
+          );
             } catch (parseError) {
               console.error("Error parsing existing session data:", parseError);
               // Continue with basic session data
@@ -729,8 +729,8 @@ router.get("/check-auth", async (req, res) => {
           // Continue with response even if session handling failed
         }
         
-        return res.json({
-          authenticated: true,
+          return res.json({
+            authenticated: true,
           user: userData,
           authMethod: "session",
           sessionID: req.sessionID,
@@ -742,14 +742,14 @@ router.get("/check-auth", async (req, res) => {
     }
     
     console.log("Check-auth: Not authenticated");
-    return res.json({ 
-      authenticated: false, 
-      message: "No valid session found" 
+    return res.json({
+      authenticated: false,
+      message: "No valid session found"
     });
   } catch (error) {
     console.error("Check auth error:", error);
     res.status(500).json({ 
-      authenticated: false, 
+      authenticated: false,
       message: "Server error during authentication check",
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
