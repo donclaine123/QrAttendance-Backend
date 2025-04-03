@@ -67,7 +67,10 @@ app.use(
 // Add CORS headers directly for more compatibility
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin && (origin.includes('localhost') || origin.includes('127.0.0.1') || origin.includes('netlify.app'))) {
+  // Check if request is from Netlify
+  const isNetlify = origin && origin.includes('netlify.app');
+  
+  if (origin && (origin.includes('localhost') || origin.includes('127.0.0.1') || isNetlify)) {
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Cache-Control, X-User-ID, X-User-Role');
@@ -92,9 +95,9 @@ const sessionMiddleware = session({
   cookie: {
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
-    // Set security based on environment
-    secure: process.env.NODE_ENV === 'production', // Only true in production
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax' // 'none' for production, 'lax' for development
+    // HTTPS settings - basic secure config (will be modified per request)
+    secure: true,  // Always use secure with HTTPS
+    sameSite: 'lax' // Will be set to 'none' for cross-origin Netlify requests
   }
 });
 
@@ -164,27 +167,23 @@ Object.defineProperty(app.response, 'cookie', {
       path: '/'
     };
     
-    // Determine if we're in production
-    const isProd = process.env.NODE_ENV === 'production';
+    // Check if request is from Netlify site
+    const isNetlify = req.headers.origin && req.headers.origin.includes('netlify.app');
     
-    // Set secure and sameSite for all cookies in production
-    if (isProd) {
+    // For Netlify deployment (cross-origin), we MUST use these settings
+    if (isNetlify) {
+      console.log(`Setting cross-origin cookie for Netlify: ${req.headers.origin}`);
       cookieOptions.secure = true;
       cookieOptions.sameSite = 'none';
-      // Set domain to allow cross-site cookies if in production
-      // This helps with Netlify to Railway communication
-      if (req.headers.origin && req.headers.origin.includes('netlify.app')) {
-        // Don't set domain for cross-origin cookies, just ensure SameSite is none
-        console.log(`Setting cross-origin cookie for origin: ${req.headers.origin}`);
-      }
-    } else if (req.headers.origin && (req.headers.origin.includes('localhost') || req.headers.origin.includes('127.0.0.1'))) {
+    } else {
       // Local development settings
-      cookieOptions.secure = false;
+      const isProd = process.env.NODE_ENV === 'production';
+      cookieOptions.secure = true; // We're using HTTPS
       cookieOptions.sameSite = 'lax';
     }
     
     // Log cookie settings for debugging
-    console.log(`🍪 Setting cookie ${name} (SameSite=${cookieOptions.sameSite}, Secure=${cookieOptions.secure})`);
+    console.log(`🍪 Setting cookie ${name} (SameSite=${cookieOptions.sameSite}, Secure=${cookieOptions.secure}, Origin=${req.headers.origin || 'none'})`);
     
     return originalCookie.call(this, name, value, cookieOptions);
   },
@@ -423,6 +422,9 @@ app.get('/auth/debug-cookies', (req, res) => {
   console.log('Origin:', req.headers.origin);
   console.log('Host:', req.headers.host);
   
+  // Check if request is from Netlify
+  const isNetlify = req.headers.origin && req.headers.origin.includes('netlify.app');
+  
   // Set a test cookie with current settings
   const testCookieName = 'debug_test_cookie';
   const isCrossDomainLocalhost = 
@@ -433,8 +435,30 @@ app.get('/auth/debug-cookies', (req, res) => {
     
   const isLocalDev = process.env.NODE_ENV !== 'production';
   
-  // Set a test cookie that matches our current environment settings
-  if (isCrossDomainLocalhost) {
+  // Set cookies based on the origin
+  if (isNetlify) {
+    // Cross-origin Netlify settings
+    console.log('Setting cookies for Netlify (cross-origin)');
+    res.cookie(testCookieName, 'netlify_cross_domain', {
+      httpOnly: false, // Make visible to JS for debugging
+      secure: true,    // Must be true for cross-origin
+      sameSite: 'none', // Must be 'none' for cross-origin
+      path: '/',
+      maxAge: 60000 // 1 minute
+    });
+    
+    // Also refresh session cookie
+    if (req.sessionID) {
+      res.cookie('qr_attendance_sid', req.sessionID, {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'none',
+        path: '/',
+        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+      });
+    }
+  } else if (isCrossDomainLocalhost) {
+    // Cross-origin localhost
     res.cookie(testCookieName, 'cross_domain_test', {
       httpOnly: true,
       secure: true,
@@ -442,33 +466,81 @@ app.get('/auth/debug-cookies', (req, res) => {
       path: '/',
       maxAge: 60000 // 1 minute
     });
-  } else if (isLocalDev) {
-    res.cookie(testCookieName, 'local_dev_test', {
+  } else {
+    // Same-origin requests
+    res.cookie(testCookieName, 'local_same_origin', {
       httpOnly: false, // Make visible to JS for debugging
-      secure: false,
+      secure: true,    // Must be true for HTTPS
       sameSite: 'lax',
       path: '/',
       maxAge: 60000 // 1 minute
     });
+    
+    // Also refresh the session cookie
+    if (req.sessionID) {
+      res.cookie('qr_attendance_sid', req.sessionID, {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+      });
+    }
   }
   
-  res.json({
-    receivedCookies: req.cookies,
-    cookieHeader: req.headers.cookie,
-    sessionID: req.sessionID,
-    currentSettings: {
-      origin: req.headers.origin,
-      host: req.headers.host,
-      isCrossDomainLocalhost,
-      isLocalDev,
-      cookieSettings: isCrossDomainLocalhost ? {
-        secure: true,
-        sameSite: 'none'
-      } : {
-        secure: false,
-        sameSite: 'lax'
+  // Get the session from the database if available
+  db.query(
+    "SELECT * FROM sessions WHERE session_id = ?", 
+    [req.sessionID]
+  ).then(([sessionRows]) => {
+    let sessionExists = false;
+    let sessionData = null;
+    
+    if (sessionRows && sessionRows.length > 0) {
+      sessionExists = true;
+      try {
+        sessionData = JSON.parse(sessionRows[0].data || '{}');
+      } catch (e) {
+        console.error("Error parsing session data:", e);
       }
     }
+    
+    res.json({
+      receivedCookies: req.cookies,
+      cookieHeader: req.headers.cookie,
+      sessionID: req.sessionID,
+      sessionExists: sessionExists,
+      sessionActive: sessionExists ? sessionRows[0].is_active : false,
+      sessionData: sessionData,
+      currentSettings: {
+        origin: req.headers.origin,
+        host: req.headers.host,
+        isCrossDomainLocalhost,
+        isNetlify,
+        isLocalDev,
+        useSecure: true,
+        useSameSite: isNetlify ? 'none' : 'lax',
+        cookieSettings: {
+          secure: true,
+          sameSite: isNetlify ? 'none' : 'lax'
+        }
+      }
+    });
+  }).catch(err => {
+    console.error("Error checking session:", err);
+    res.json({
+      receivedCookies: req.cookies,
+      cookieHeader: req.headers.cookie,
+      sessionID: req.sessionID,
+      error: "Failed to check session in database",
+      currentSettings: {
+        origin: req.headers.origin,
+        host: req.headers.host,
+        isCrossDomainLocalhost,
+        isNetlify,
+        isLocalDev
+      }
+    });
   });
 });
 

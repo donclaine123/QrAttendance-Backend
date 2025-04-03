@@ -531,11 +531,11 @@ router.get("/check-auth", async (req, res) => {
       
       // IMPORTANT: Reset the session cookie
       // This is to ensure the cookie is properly refreshed in the browser
-      const isDev = process.env.NODE_ENV !== 'production';
+      const isNetlify = req.headers.origin && req.headers.origin.includes('netlify.app');
       res.cookie('qr_attendance_sid', req.sessionID, {
         httpOnly: true,
-        secure: !isDev,
-        sameSite: isDev ? 'lax' : 'none',
+        secure: true,   // Always true for HTTPS
+        sameSite: isNetlify ? 'none' : 'lax', // Must be 'none' for Netlify cross-origin
         maxAge: 24 * 60 * 60 * 1000 // 24 hours
       });
       
@@ -619,11 +619,11 @@ router.get("/check-auth", async (req, res) => {
           console.log(`Session authentication successful for user ${userId} (${role})`);
           
           // IMPORTANT: Reset the cookie again to ensure it's properly sent
-          const isDev = process.env.NODE_ENV !== 'production';
+          const isNetlify = req.headers.origin && req.headers.origin.includes('netlify.app');
           res.cookie('qr_attendance_sid', sessionCookie, {
             httpOnly: true,
-            secure: !isDev,
-            sameSite: isDev ? 'lax' : 'none',
+            secure: true,
+            sameSite: isNetlify ? 'none' : 'lax',
             maxAge: 24 * 60 * 60 * 1000 // 24 hours
           });
           
@@ -724,11 +724,11 @@ router.get("/check-auth", async (req, res) => {
           );
           
           // Set the cookie with the existing session ID
-          const isDev = process.env.NODE_ENV !== 'production';
+          const isNetlify = req.headers.origin && req.headers.origin.includes('netlify.app');
           res.cookie('qr_attendance_sid', existingSessionId, {
             httpOnly: true,
-            secure: !isDev,
-            sameSite: isDev ? 'lax' : 'none',
+            secure: true,
+            sameSite: isNetlify ? 'none' : 'lax',
             maxAge: 24 * 60 * 60 * 1000
           });
           
@@ -827,11 +827,11 @@ router.get("/check-auth", async (req, res) => {
         );
         
         // Set the cookie
-        const isDev = process.env.NODE_ENV !== 'production';
+        const isNetlify = req.headers.origin && req.headers.origin.includes('netlify.app');
         res.cookie('qr_attendance_sid', req.sessionID, {
           httpOnly: true,
-          secure: !isDev,
-          sameSite: isDev ? 'lax' : 'none',
+          secure: true,
+          sameSite: isNetlify ? 'none' : 'lax',
           maxAge: 24 * 60 * 60 * 1000 // 24 hours
         });
         
