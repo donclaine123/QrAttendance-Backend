@@ -194,7 +194,7 @@ router.post('/logout', async (req, res) => {
     const userId = req.session.userId;
     const role = req.session.role;
     const sessionId = req.sessionID; // Store session ID before destroying
-    
+    console.log(sessionId);
     // Destroy the session
     await new Promise((resolve, reject) => {
       req.session.destroy(err => {
