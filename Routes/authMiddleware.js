@@ -117,6 +117,17 @@ const authenticate = async (req, res, next) => {
     if (headerUserId && headerUserRole) {
       console.log(`🔑 Header-based auth detected: User ${headerUserId} (${headerUserRole})`);
       
+      // Skip header auth if we already have a session cookie
+      // This prevents creating duplicate sessions when a user already has a cookie
+      if (sessionCookie) {
+        console.log(`⚠️ Skipping header auth because a session cookie (${sessionCookie}) is present but invalid`);
+        return res.status(401).json({ 
+          success: false, 
+          message: "Session expired or invalid. Please log in again.",
+          code: "SESSION_EXPIRED" 
+        });
+      }
+      
       // Validate the user exists
       let userExists = false;
       
@@ -136,6 +147,39 @@ const authenticate = async (req, res, next) => {
       
       if (userExists) {
         console.log(`✅ Header-based auth successful for ${headerUserId}`);
+        
+        // First check if user already has an active session in the database
+        try {
+          const [existingSessions] = await db.query(
+            `SELECT session_id FROM sessions 
+             WHERE user_id = ? AND role = ? AND is_active = TRUE 
+             ORDER BY created_at DESC LIMIT 1`,
+            [headerUserId, headerUserRole]
+          );
+          
+          if (existingSessions.length > 0) {
+            console.log(`Found existing active session (${existingSessions[0].session_id}) for user, will use it instead of creating new one`);
+            
+            // Update the session's activity timestamp
+            await db.query(
+              "UPDATE sessions SET last_activity = NOW() WHERE session_id = ?",
+              [existingSessions[0].session_id]
+            );
+            
+            // Set cookie with this session ID to reuse it
+            const isProd = process.env.NODE_ENV === 'production';
+            res.cookie('qr_attendance_sid', existingSessions[0].session_id, {
+              httpOnly: true,
+              path: '/',
+              maxAge: 24 * 60 * 60 * 1000,
+              secure: isProd,
+              sameSite: isProd ? 'none' : 'lax'
+            });
+          }
+        } catch (err) {
+          console.error("Error checking for existing sessions:", err);
+          // Continue with regular header auth
+        }
         
         // Attach user to the request
         req.user = { 

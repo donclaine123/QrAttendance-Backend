@@ -1077,134 +1077,172 @@ router.get('/test-session-store', async (req, res) => {
   }
 });
 
-// 📌 Re-authentication endpoint to restore session from localStorage data
-router.post('/reauth', async (req, res) => {
+// 📌 Session re-authentication endpoint for LocalStorage fallback
+router.post("/reauth", async (req, res) => {
+  const { userId, role } = req.body;
+  
+  if (!userId || !role) {
+    return res.status(400).json({
+      success: false,
+      message: "Missing userId or role"
+    });
+  }
+  
   try {
-    const { userId, role } = req.body;
+    console.log(`Re-authentication attempt for user ${userId} (${role})`);
     
-    // Also check headers for auth info
-    const headerUserId = req.headers['x-user-id'] || userId;
-    const headerUserRole = req.headers['x-user-role'] || role;
+    // First check if there's already an active session for this user
+    const [existingSessions] = await db.query(
+      `SELECT session_id, data FROM sessions 
+       WHERE user_id = ? AND role = ? AND is_active = TRUE AND expires_at > NOW()
+       ORDER BY created_at DESC LIMIT 1`,
+      [userId, role]
+    );
     
-    if (!headerUserId || !headerUserRole) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Missing required authentication parameters" 
-      });
-    }
-    
-    console.log(`Attempting to re-authenticate user ${headerUserId} with role ${headerUserRole}`);
-    
-    // Look up user data based on the provided ID and role
-    let userData = null;
-    if (headerUserRole === 'teacher') {
-      const [teachers] = await db.query(
-        "SELECT id, first_name, last_name, email FROM teachers WHERE id = ?", 
-        [headerUserId]
+    // If an active session exists, use it instead of creating a new one
+    if (existingSessions.length > 0) {
+      const existingSessionId = existingSessions[0].session_id;
+      console.log(`Found existing active session ${existingSessionId} for user ${userId}, reusing instead of creating new one`);
+      
+      // Update the session data
+      req.session.userId = userId;
+      req.session.role = role;
+      
+      // Get name information from database
+      const [userInfo] = await db.query(
+        `SELECT first_name, last_name FROM ${role}s WHERE id = ?`,
+        [userId]
       );
       
-      if (teachers && teachers.length > 0) {
-        userData = teachers[0];
+      if (userInfo.length > 0) {
+        req.session.firstName = userInfo[0].first_name;
+        req.session.lastName = userInfo[0].last_name;
       }
-    } else if (headerUserRole === 'student') {
-      const [students] = await db.query(
-        "SELECT id, first_name, last_name, email FROM students WHERE id = ?", 
-        [headerUserId]
+      
+      // Update last activity
+      await db.query(
+        `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
+        [existingSessionId]
       );
       
-      if (students && students.length > 0) {
-        userData = students[0];
-      }
-    }
-    
-    if (!userData) {
-      return res.status(401).json({ 
-        success: false, 
-        message: "User not found" 
-      });
-    }
-    
-    // Check for existing sessions for this user
-    try {
-      const [existingSessions] = await db.query(
-        `SELECT session_id FROM sessions 
-         WHERE user_id = ? AND role = ? AND is_active = TRUE`,
-        [headerUserId, headerUserRole]
-      );
-      
-      if (existingSessions.length > 0) {
-        console.log(`Found ${existingSessions.length} existing sessions for user ${headerUserId}. Keeping one active session.`);
-        
-        if (existingSessions.length > 1) {
-          // Keep only the newest session (this will happen in the cleanupExpiredSessions function)
-          console.log('Multiple sessions will be cleaned up during next scheduled cleanup');
-        }
-      }
-    } catch (dbError) {
-      console.error("Error checking for existing sessions:", dbError);
-      // Continue anyway, not critical
-    }
-    
-    // Set up a new session
-    req.session.userId = userData.id;
-    req.session.role = headerUserRole;
-    req.session.firstName = userData.first_name;
-    req.session.lastName = userData.last_name;
-    req.session.email = userData.email;
-    req.session.createdAt = new Date().toISOString();
-    req.session.lastActivity = new Date().toISOString();
-    
-    // Save the session
-    req.session.save(function(err) {
-      if (err) {
-        console.error("Error saving session:", err);
-        return res.status(500).json({ 
-          success: false, 
-          message: "Session save failed", 
-          error: err.message
-        });
-      }
-      
-      console.log(`✅ Re-authentication successful for user ${userData.id}. Session ID:`, req.sessionID);
-      
-      // Set cookie manually with correct options based on environment
+      // Set the session cookie explicitly
       const isProd = process.env.NODE_ENV === 'production';
       const cookieOptions = {
         httpOnly: true,
         path: '/',
         maxAge: 24 * 60 * 60 * 1000, // 24 hours
-        secure: isProd, // true in production
-        sameSite: isProd ? 'none' : 'lax' // 'none' in production
+        secure: isProd,
+        sameSite: isProd ? 'none' : 'lax'
       };
       
-      // Log cookie settings for debugging
-      console.log("🍪 Setting session cookie with options:", {
-        secure: cookieOptions.secure,
-        sameSite: cookieOptions.sameSite
-      });
+      res.cookie('qr_attendance_sid', existingSessionId, cookieOptions);
       
-      res.cookie('qr_attendance_sid', req.sessionID, cookieOptions);
-      
-      // Return success with user data
-      return res.json({ 
-      success: true, 
-        message: "Re-authentication successful",
-        sessionId: req.sessionID,
+      return res.json({
+        success: true,
+        message: "Session reestablished",
+        sessionId: existingSessionId,
         user: {
-          id: userData.id,
-          firstName: userData.first_name,
-          lastName: userData.last_name,
-          email: userData.email,
-          role: headerUserRole
+          id: userId,
+          role: role,
+          firstName: req.session.firstName,
+          lastName: req.session.lastName
         }
+      });
+    }
+    
+    // If no active session, create a new one
+    // Verify the user exists in the database
+    let userExists = false;
+    let firstName = null;
+    let lastName = null;
+    
+    if (role === 'teacher') {
+      const [teachers] = await db.query(
+        "SELECT id, first_name, last_name FROM teachers WHERE id = ? AND is_verified = TRUE",
+        [userId]
+      );
+      if (teachers.length > 0) {
+        userExists = true;
+        firstName = teachers[0].first_name;
+        lastName = teachers[0].last_name;
+      }
+    } else if (role === 'student') {
+      const [students] = await db.query(
+        "SELECT id, first_name, last_name FROM students WHERE id = ? AND is_verified = TRUE",
+        [userId]
+      );
+      if (students.length > 0) {
+        userExists = true;
+        firstName = students[0].first_name;
+        lastName = students[0].last_name;
+      }
+    }
+    
+    if (!userExists) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID or role"
+      });
+    }
+    
+    // Clear any existing session data and create a new one
+    req.session.regenerate((err) => {
+      if (err) {
+        console.error("Session regeneration failed:", err);
+        return res.status(500).json({ 
+          success: false, 
+          message: "Failed to create new session" 
+        });
+      }
+      
+      // Set session data
+      req.session.userId = userId;
+      req.session.role = role;
+      req.session.firstName = firstName;
+      req.session.lastName = lastName;
+      
+      // Save session
+      req.session.save((saveErr) => {
+        if (saveErr) {
+          console.error("Session save failed:", saveErr);
+          return res.status(500).json({ 
+            success: false, 
+            message: "Failed to save session" 
+          });
+        }
+        
+        console.log(`Created new session ${req.sessionID} for user ${userId}`);
+        
+        // Set cookie with proper environment settings
+        const isProd = process.env.NODE_ENV === 'production';
+        const cookieOptions = {
+          httpOnly: true,
+          path: '/',
+          maxAge: 24 * 60 * 60 * 1000, // 24 hours
+          secure: isProd,
+          sameSite: isProd ? 'none' : 'lax'
+        };
+        
+        res.cookie('qr_attendance_sid', req.sessionID, cookieOptions);
+        
+        return res.json({
+          success: true,
+          message: "Session created",
+          sessionId: req.sessionID,
+          user: {
+            id: userId,
+            role: role,
+            firstName: firstName,
+            lastName: lastName
+          }
+        });
       });
     });
   } catch (error) {
     console.error("Re-authentication error:", error);
     res.status(500).json({ 
       success: false, 
-      message: "Re-authentication failed",
-      error: error.message
+      message: "Server error during re-authentication" 
     });
   }
 });
