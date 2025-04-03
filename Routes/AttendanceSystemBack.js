@@ -562,72 +562,51 @@ router.get('/teacher/attendance/:sessionId', authenticate, async (req, res) => {
     }
 });
 
-// Add a special endpoint for teacher classes that handles cookie issues
-router.get('/teacher-classes/:teacherId', async (req, res) => {
+// Get classes for a teacher
+router.get("/teacher-classes/:teacherId", async (req, res) => {
   try {
-    // Get teacher ID from URL parameter
     const teacherId = req.params.teacherId;
     
-    console.log(`Getting classes for teacher ${teacherId}`);
-    console.log(`Request cookies: ${req.headers.cookie || 'None'}`);
-    console.log(`Session ID: ${req.sessionID}`);
+    // Verify authorization (either session or header-based)
+    const isAuthenticated = 
+      (req.session && req.session.userId && req.session.role === 'teacher' && req.session.userId == teacherId) ||
+      (req.headers['x-user-id'] && req.headers['x-user-role'] === 'teacher' && req.headers['x-user-id'] == teacherId);
     
-    // Check if user is authenticated via session
-    let isAuthenticated = false;
-    
-    if (req.session && req.session.userId && req.session.role === 'teacher') {
-      if (parseInt(req.session.userId) === parseInt(teacherId)) {
-        console.log(`User authenticated via session as teacher ${teacherId}`);
-        isAuthenticated = true;
-      } else {
-        console.log(`Session user ID ${req.session.userId} doesn't match requested teacher ID ${teacherId}`);
-      }
-    } else {
-      console.log('No valid session found, checking database directly');
-    }
-    
-    // If not authenticated via session, verify the teacher exists
     if (!isAuthenticated) {
-      const [teacherCheck] = await db.query(
-        'SELECT id FROM teachers WHERE id = ?',
-        [teacherId]
-      );
+      console.log('Unauthorized access to teacher classes endpoint');
+      console.log('Session user:', req.session?.userId, 'Session role:', req.session?.role);
+      console.log('Header user:', req.headers['x-user-id'], 'Header role:', req.headers['x-user-role']);
+      console.log('Requested teacher ID:', teacherId);
       
-      if (teacherCheck.length > 0) {
-        console.log(`Teacher ${teacherId} exists in database, allowing access`);
-        isAuthenticated = true;
-      } else {
-        console.log(`Teacher ${teacherId} not found in database`);
-      }
-    }
-    
-    if (!isAuthenticated) {
       return res.status(401).json({
         success: false,
-        message: 'Unauthorized access'
+        message: "Unauthorized. Please log in as a teacher."
       });
     }
     
-    // Query to get teacher's classes
-    const [classes] = await db.query(
-      `SELECT id, class_name, subject, description, created_at
-       FROM class_records
-       WHERE teacher_id = ? AND is_active = TRUE
-       ORDER BY created_at DESC`,
+    const [rows] = await db.query(
+      "SELECT classes.id, classes.name, classes.description, classes.subject, " +
+      "COUNT(DISTINCT class_sessions.id) as session_count, " +
+      "COUNT(DISTINCT attendances.id) as total_attendances " +
+      "FROM classes " +
+      "LEFT JOIN class_sessions ON classes.id = class_sessions.class_id " +
+      "LEFT JOIN attendances ON class_sessions.id = attendances.session_id " +
+      "WHERE classes.teacher_id = ? " +
+      "GROUP BY classes.id " +
+      "ORDER BY classes.name ASC",
       [teacherId]
     );
     
-    console.log(`Retrieved ${classes.length} classes for teacher ${teacherId}`);
-    
-    return res.json({
+    res.json({
       success: true,
-      classes: classes
+      classes: rows
     });
   } catch (error) {
-    console.error('Error fetching teacher classes:', error);
+    console.error("Error fetching teacher classes:", error);
     res.status(500).json({
       success: false,
-      message: 'Server error while fetching classes'
+      message: "Failed to load classes",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });

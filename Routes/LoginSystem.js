@@ -884,30 +884,34 @@ router.post('/reauth', async (req, res) => {
   try {
     const { userId, role } = req.body;
     
-    if (!userId || !role) {
+    // Also check headers for auth info
+    const headerUserId = req.headers['x-user-id'] || userId;
+    const headerUserRole = req.headers['x-user-role'] || role;
+    
+    if (!headerUserId || !headerUserRole) {
       return res.status(400).json({ 
         success: false, 
-        message: "Missing required parameters" 
+        message: "Missing required authentication parameters" 
       });
     }
     
-    console.log(`Attempting to re-authenticate user ${userId} with role ${role}`);
+    console.log(`Attempting to re-authenticate user ${headerUserId} with role ${headerUserRole}`);
     
     // Look up user data based on the provided ID and role
     let userData = null;
-    if (role === 'teacher') {
+    if (headerUserRole === 'teacher') {
       const [teachers] = await db.query(
         "SELECT id, first_name, last_name, email FROM teachers WHERE id = ?", 
-        [userId]
+        [headerUserId]
       );
       
       if (teachers && teachers.length > 0) {
         userData = teachers[0];
       }
-    } else if (role === 'student') {
+    } else if (headerUserRole === 'student') {
       const [students] = await db.query(
         "SELECT id, first_name, last_name, email FROM students WHERE id = ?", 
-        [userId]
+        [headerUserId]
       );
       
       if (students && students.length > 0) {
@@ -922,9 +926,30 @@ router.post('/reauth', async (req, res) => {
       });
     }
     
+    // Check for existing sessions for this user
+    try {
+      const [existingSessions] = await db.query(
+        `SELECT session_id FROM sessions 
+         WHERE user_id = ? AND role = ? AND is_active = TRUE`,
+        [headerUserId, headerUserRole]
+      );
+      
+      if (existingSessions.length > 0) {
+        console.log(`Found ${existingSessions.length} existing sessions for user ${headerUserId}. Keeping one active session.`);
+        
+        if (existingSessions.length > 1) {
+          // Keep only the newest session (this will happen in the cleanupExpiredSessions function)
+          console.log('Multiple sessions will be cleaned up during next scheduled cleanup');
+        }
+      }
+    } catch (dbError) {
+      console.error("Error checking for existing sessions:", dbError);
+      // Continue anyway, not critical
+    }
+    
     // Set up a new session
     req.session.userId = userData.id;
-    req.session.role = role;
+    req.session.role = headerUserRole;
     req.session.firstName = userData.first_name;
     req.session.lastName = userData.last_name;
     req.session.email = userData.email;
@@ -944,11 +969,36 @@ router.post('/reauth', async (req, res) => {
       
       console.log(`✅ Re-authentication successful for user ${userData.id}. Session ID:`, req.sessionID);
       
-      // Return success
+      // Set cookie manually with correct options based on environment
+      const isProd = process.env.NODE_ENV === 'production';
+      const cookieOptions = {
+        httpOnly: true,
+        path: '/',
+        maxAge: 24 * 60 * 60 * 1000, // 24 hours
+        secure: isProd, // true in production
+        sameSite: isProd ? 'none' : 'lax' // 'none' in production
+      };
+      
+      // Log cookie settings for debugging
+      console.log("🍪 Setting session cookie with options:", {
+        secure: cookieOptions.secure,
+        sameSite: cookieOptions.sameSite
+      });
+      
+      res.cookie('qr_attendance_sid', req.sessionID, cookieOptions);
+      
+      // Return success with user data
       return res.json({ 
         success: true,
         message: "Re-authentication successful",
-        sessionId: req.sessionID
+        sessionId: req.sessionID,
+        user: {
+          id: userData.id,
+          firstName: userData.first_name,
+          lastName: userData.last_name,
+          email: userData.email,
+          role: headerUserRole
+        }
       });
     });
   } catch (error) {

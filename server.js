@@ -43,7 +43,7 @@ app.use(
     origin: ["http://localhost:5500", "http://localhost:3000", "http://127.0.0.1:5500", "https://splendorous-paprenjak-09a988.netlify.app"],
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Cache-Control"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Cache-Control", "X-User-ID", "X-User-Role"],
     exposedHeaders: ["Set-Cookie"],
     preflightContinue: false
   })
@@ -55,7 +55,7 @@ app.use((req, res, next) => {
   if (origin && (origin.includes('localhost') || origin.includes('127.0.0.1') || origin.includes('netlify.app'))) {
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Cache-Control');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Cache-Control, X-User-ID, X-User-Role');
     res.header('Access-Control-Expose-Headers', 'Set-Cookie');
     
     // Handle OPTIONS preflight request
