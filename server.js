@@ -181,9 +181,45 @@ async function cleanupExpiredSessions() {
       console.log(`🧹 Cleaned up ${deleteResult.affectedRows} expired/inactive sessions`);
     }
     
+    // Check for duplicate active sessions for the same user (keep only the newest)
+    const [duplicateUsers] = await db.query(`
+      SELECT user_id, role, COUNT(*) as session_count
+      FROM sessions 
+      WHERE is_active = TRUE
+      GROUP BY user_id, role
+      HAVING COUNT(*) > 1
+    `);
+    
+    for (const user of duplicateUsers) {
+      console.log(`⚠️ Found ${user.session_count} duplicate sessions for user ${user.user_id} (${user.role})`);
+      
+      // Get all sessions for this user, ordered by created_at
+      const [userSessions] = await db.query(`
+        SELECT session_id, created_at
+        FROM sessions
+        WHERE user_id = ? AND role = ? AND is_active = TRUE
+        ORDER BY created_at DESC
+      `, [user.user_id, user.role]);
+      
+      // Keep only the newest session
+      if (userSessions.length > 1) {
+        const keepSessionId = userSessions[0].session_id;
+        const sessionsToInvalidate = userSessions.slice(1).map(s => s.session_id);
+        
+        console.log(`Keeping session ${keepSessionId}, invalidating ${sessionsToInvalidate.length} sessions`);
+        
+        // Invalidate all but the newest session
+        await db.query(`
+          UPDATE sessions
+          SET is_active = FALSE, expires_at = NOW()
+          WHERE session_id IN (?)
+        `, [sessionsToInvalidate]);
+      }
+    }
+    
     // Count remaining sessions
     const [countResult] = await db.query(
-      `SELECT COUNT(*) AS total FROM sessions`
+      `SELECT COUNT(*) AS total FROM sessions WHERE is_active = TRUE`
     );
     
     if (countResult[0]?.total > 0) {
@@ -197,8 +233,62 @@ async function cleanupExpiredSessions() {
   setTimeout(cleanupExpiredSessions, 30 * 60 * 1000); // Every 30 minutes
 }
 
-// Start initial cleanup after server starts
-setTimeout(cleanupExpiredSessions, 60 * 1000); // 1 minute after startup
+// Add function to completely reset all sessions for a user
+async function resetAllSessionsForUser(userId, role) {
+  try {
+    const [result] = await db.query(`
+      UPDATE sessions
+      SET is_active = FALSE, expires_at = NOW()
+      WHERE user_id = ? AND role = ?
+    `, [userId, role]);
+    
+    return { 
+      success: true, 
+      invalidatedCount: result.affectedRows,
+      message: `Invalidated ${result.affectedRows} sessions for user ${userId} (${role})`
+    };
+  } catch (error) {
+    console.error('Error resetting sessions:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+// Add an endpoint to force reset all sessions for debug purposes
+app.post('/auth/reset-all-sessions', async (req, res) => {
+  const { userId, role, secretKey } = req.body;
+  
+  // Basic protection to prevent unauthorized resets
+  if (secretKey !== process.env.ADMIN_SECRET) {
+    return res.status(401).json({
+      success: false,
+      message: 'Unauthorized: Invalid secret key'
+    });
+  }
+  
+  if (!userId || !role) {
+    return res.status(400).json({
+      success: false,
+      message: 'Missing required parameters: userId and role'
+    });
+  }
+  
+  try {
+    const result = await resetAllSessionsForUser(userId, role);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message
+    });
+  }
+});
+
+// Run an immediate cleanup to handle existing duplicate sessions
+cleanupExpiredSessions();
 
 // API routes
 app.use("/auth", loginSystem);  

@@ -113,12 +113,22 @@ router.post("/login", async (req, res) => {
         console.log(`✅ Session saved successfully for ${email}. Session ID:`, req.sessionID);
         
         // Set cookie manually with correct options based on environment
+        const isProd = process.env.NODE_ENV === 'production';
         const cookieOptions = {
           httpOnly: true,
           path: '/',
           maxAge: 24 * 60 * 60 * 1000, // 24 hours
-          sameSite: 'lax'
+          secure: isProd, // true in production
+          sameSite: isProd ? 'none' : 'lax' // 'none' in production
         };
+        
+        // Log cookie settings for debugging
+        console.log("🍪 Setting cookie with options:", {
+          secure: cookieOptions.secure,
+          sameSite: cookieOptions.sameSite,
+          httpOnly: cookieOptions.httpOnly,
+          origin: req.headers.origin
+        });
         
         res.cookie('qr_attendance_sid', req.sessionID, cookieOptions);
         
@@ -169,13 +179,28 @@ router.post('/logout', (req, res) => {
       
       console.log(`✅ Logout successful for user ${userId} (${role})`);
       
-      // Clear the cookie
-      res.clearCookie('qr_attendance_sid', {
+      // Clear the cookie with proper options for production/development
+      const isProd = process.env.NODE_ENV === 'production';
+      const cookieOptions = {
         path: '/',
-        httpOnly: false,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax'
-      });
+        httpOnly: true,
+        secure: isProd,
+        sameSite: isProd ? 'none' : 'lax'
+      };
+      
+      console.log(`Clearing cookie with options:`, cookieOptions);
+      
+      // Clear both cookie domains to ensure it's properly removed
+      res.clearCookie('qr_attendance_sid', cookieOptions);
+      
+      // Also try to delete from the database directly to ensure it's gone
+      try {
+        const db = require('../db');
+        db.query('DELETE FROM sessions WHERE session_id = ?', [req.sessionID]);
+      } catch (dbError) {
+        console.error('Error deleting session from database:', dbError);
+        // Non-critical error, continue
+      }
       
       return res.json({
         success: true,
@@ -393,6 +418,18 @@ router.get("/verify", async (req, res) => {
 // 📌 Update check-auth endpoint
 router.get("/check-auth", async (req, res) => {
   try {
+    console.log("Check-auth request - Session ID:", req.sessionID);
+    console.log("Check-auth request - Cookies:", req.headers.cookie || 'none');
+    
+    // Header-based authentication (fallback for when cookies don't work)
+    const headerUserId = req.headers['x-user-id'];
+    const headerUserRole = req.headers['x-user-role'];
+    const hasHeaderAuth = headerUserId && headerUserRole;
+    
+    if (hasHeaderAuth) {
+      console.log(`Header auth received: User ${headerUserId} (${headerUserRole})`);
+    }
+    
     // Check for active session
     if (req.session && req.session.userId && req.session.role) {
       console.log("Check-auth: Session authenticated", req.sessionID);
@@ -420,17 +457,16 @@ router.get("/check-auth", async (req, res) => {
         }
       } else if (role === 'student') {
         const [studentRows] = await db.query(
-          "SELECT email, student_id as student_number FROM students WHERE id = ?", 
+          "SELECT email, student_id FROM students WHERE id = ?", 
           [userId]
         );
         
         if (studentRows && studentRows.length > 0) {
           userData.email = studentRows[0].email;
-          userData.student_number = studentRows[0].student_number;
+          userData.studentId = studentRows[0].student_id;
         }
       }
       
-      // Return authenticated status with user data
       return res.json({
         authenticated: true,
         user: userData,
@@ -438,65 +474,86 @@ router.get("/check-auth", async (req, res) => {
       });
     }
     
-    // When no session, check for session cookie
-    const sessionId = req.cookies.qr_attendance_sid;
-    if (sessionId) {
-      // Try to find session in database
-      const [sessions] = await db.query(
-        `SELECT user_id, role, data FROM sessions 
-         WHERE session_id = ? AND expires_at > NOW() AND is_active = TRUE`,
-        [sessionId]
-      );
+    // If no session, try header-based auth as fallback
+    if (hasHeaderAuth) {
+      const userId = parseInt(headerUserId);
+      const role = headerUserRole;
       
-      if (sessions && sessions.length > 0) {
-        // Found valid session in database
-        console.log("Check-auth: Found valid session in database", sessionId);
+      // Get user details from database based on role
+      let userData = null;
+      
+      if (role === 'teacher') {
+        const [teacherRows] = await db.query(
+          "SELECT id, email, first_name, last_name FROM teachers WHERE id = ?", 
+          [userId]
+        );
         
-        try {
-          // Try to restore session from data
-          const sessionData = JSON.parse(sessions[0].data);
-          req.session.userId = sessionData.userId;
-          req.session.role = sessionData.role;
-          req.session.firstName = sessionData.firstName;
-          req.session.lastName = sessionData.lastName;
-          
-          // Update session last activity
-          await db.query(
-            `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
-            [sessionId]
-          );
-          
-          // Return authenticated status with restored user data
-          return res.json({
-            authenticated: true,
-            user: {
-              id: req.session.userId,
-              role: req.session.role,
-              firstName: req.session.firstName,
-              lastName: req.session.lastName
-            },
-            sessionID: sessionId,
-            restored: true
-          });
-        } catch (parseError) {
-          console.error("Error restoring session from data:", parseError);
-          // Continue to unauthenticated response
+        if (teacherRows && teacherRows.length > 0) {
+          userData = {
+            id: teacherRows[0].id,
+            role: 'teacher',
+            firstName: teacherRows[0].first_name,
+            lastName: teacherRows[0].last_name,
+            email: teacherRows[0].email
+          };
         }
+      } else if (role === 'student') {
+        const [studentRows] = await db.query(
+          "SELECT id, email, first_name, last_name, student_id FROM students WHERE id = ?", 
+          [userId]
+        );
+        
+        if (studentRows && studentRows.length > 0) {
+          userData = {
+            id: studentRows[0].id,
+            role: 'student',
+            firstName: studentRows[0].first_name,
+            lastName: studentRows[0].last_name,
+            email: studentRows[0].email,
+            studentId: studentRows[0].student_id
+          };
+        }
+      }
+      
+      if (userData) {
+        console.log(`Header-based auth successful for user ${userId} (${role})`);
+        
+        // Set up a session since we have valid credentials
+        req.session.userId = userData.id;
+        req.session.role = role;
+        req.session.firstName = userData.firstName;
+        req.session.lastName = userData.lastName;
+        req.session.email = userData.email;
+        
+        // Save the session (but don't wait for it to complete)
+        req.session.save(err => {
+          if (err) {
+            console.error("Error saving session during header auth:", err);
+          } else {
+            console.log("Session created from header auth:", req.sessionID);
+          }
+        });
+        
+        return res.json({
+          authenticated: true,
+          user: userData,
+          sessionID: req.sessionID,
+          restored: true
+        });
       }
     }
     
-    // Not authenticated at all
-    console.log("Check-auth: No valid session found");
-    return res.json({
-      authenticated: false,
-      message: "No valid session found"
+    console.log("Check-auth: Not authenticated");
+    return res.json({ 
+      authenticated: false, 
+      message: "No valid session found" 
     });
   } catch (error) {
-    console.error("Error in check-auth:", error);
-    return res.status(500).json({
-      authenticated: false,
-      message: "Server error checking authentication status",
-      error: error.message
+    console.error("Check auth error:", error);
+    res.status(500).json({ 
+      authenticated: false, 
+      message: "Server error during authentication check",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
