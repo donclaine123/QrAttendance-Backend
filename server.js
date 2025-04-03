@@ -68,19 +68,17 @@ app.use((req, res, next) => {
 });
 
 // Configure session middleware
-// In the session middleware configuration
 const sessionMiddleware = session({
   key: 'qr_attendance_sid',
   secret: process.env.SESSION_SECRET || crypto.randomBytes(64).toString('hex'),
   store: sessionStore,
-  resave: false,
-  saveUninitialized: false,
+  resave: false,  // Keep false to prevent duplicate saves
+  saveUninitialized: false,  // Keep false to avoid empty sessions
   cookie: {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-    maxAge: 24 * 60 * 60 * 1000,
-    domain: process.env.NODE_ENV === 'production' ? '.up.railway.app' : 'localhost' // Add domain restriction
+    sameSite: 'none',
+    maxAge: 24 * 60 * 60 * 1000
   }
 });
 
@@ -150,12 +148,9 @@ Object.defineProperty(app.response, 'cookie', {
     const isProd = process.env.NODE_ENV === 'production';
     
     // Set secure and sameSite for all cookies in production
-    // In the cookie override section
     if (isProd) {
       cookieOptions.secure = true;
       cookieOptions.sameSite = 'none';
-      cookieOptions.domain = '.up.railway.app'; // Add domain for cross-subdomain cookies
-    
       // Set domain to allow cross-site cookies if in production
       // This helps with Netlify to Railway communication
       if (req.headers.origin && req.headers.origin.includes('netlify.app')) {
