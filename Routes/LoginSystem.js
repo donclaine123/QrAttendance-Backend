@@ -475,7 +475,7 @@ router.post("/register", async (req, res) => {
     }
 
     // 🔹 Send verification email
-    const verifyUrl = `${process.env.FRONTEND_URL || 'http://localhost:5000'}/auth/verify?token=${verificationToken}`;
+    const verifyUrl = `${process.env.FRONTEND_URL || 'http://localhost:5000'}/pages/verify.html?token=${verificationToken}`;
     await transporter.sendMail({
       from: `"QR Code Attendance System" <${process.env.EMAIL_USER}>`,
       to: email,
