@@ -377,19 +377,28 @@ router.get("/class-sessions/:classId", authenticate, requireRole('teacher'), asy
     const teacherId = req.user.id;
     
     console.log(`👨‍🏫 Fetching sessions for class ID ${classId}, teacher ${teacherId}`);
+    console.log(`Auth method: ${req.user.headerAuth ? 'header-based' : 'session-based'}`);
+    
+    // Additional validation for header-based auth
+    if (req.user.headerAuth) {
+      console.log(`Using header auth values: ID=${req.headers['x-user-id']}, Role=${req.headers['x-user-role']}`);
+    }
     
     // Verify the class belongs to this teacher
     const [classCheck] = await db.query(
-      `SELECT id FROM class_records WHERE id = ? AND teacher_id = ? AND is_active = TRUE`,
+      `SELECT id, class_name FROM class_records WHERE id = ? AND teacher_id = ? AND is_active = TRUE`,
       [classId, teacherId]
     );
     
     if (classCheck.length === 0) {
+      console.log(`❌ Class ${classId} not found or doesn't belong to teacher ${teacherId}`);
       return res.status(404).json({
         success: false,
         message: "Class not found or you don't have access to it"
       });
     }
+    
+    console.log(`✅ Class verification successful: "${classCheck[0].class_name}" (ID: ${classId})`);
     
     // Get sessions for this class with UTC+8 time format using MySQL functions
     const [sessions] = await db.query(
@@ -422,7 +431,9 @@ router.get("/class-sessions/:classId", authenticate, requireRole('teacher'), asy
     return res.json({
       success: true,
       sessions: formattedSessions,
-      count: formattedSessions.length
+      count: formattedSessions.length,
+      teacherId: teacherId, // Include teacherId for verification
+      className: classCheck[0].class_name
     });
     
   } catch (error) {
@@ -430,7 +441,7 @@ router.get("/class-sessions/:classId", authenticate, requireRole('teacher'), asy
     return res.status(500).json({
       success: false,
       message: "Failed to fetch sessions for this class",
-      error: error.message
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });

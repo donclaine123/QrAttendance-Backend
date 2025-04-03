@@ -56,6 +56,29 @@ router.post("/login", async (req, res) => {
 
     console.log(`User ${user.id} with role ${role} is logging in - session ID: ${req.sessionID}`);
 
+    // IMPROVED SESSION MANAGEMENT: First invalidate any existing sessions for this user
+    try {
+      const [existingSessions] = await db.query(
+        `SELECT session_id FROM sessions 
+         WHERE user_id = ? AND role = ? AND is_active = TRUE`,
+        [user.id, role]
+      );
+      
+      if (existingSessions.length > 0) {
+        console.log(`Found ${existingSessions.length} existing sessions for user ${user.id}. Marking as inactive.`);
+        
+        await db.query(
+          `UPDATE sessions 
+           SET is_active = FALSE, last_activity = NOW()
+           WHERE user_id = ? AND role = ?`,
+          [user.id, role]
+        );
+      }
+    } catch (dbError) {
+      console.error("Error handling existing sessions:", dbError);
+      // Continue with login process, not critical
+    }
+
     // Clear any existing session data
     req.session.regenerate(async function(err) {
       if (err) {
@@ -76,27 +99,32 @@ router.post("/login", async (req, res) => {
       req.session.createdAt = new Date().toISOString();
       req.session.lastActivity = new Date().toISOString();
       
-      // Check for and invalidate existing active sessions for this user
+      // Ensure session record is created in database with proper expiration
       try {
-        const [existingSessions] = await db.query(
-          `SELECT session_id FROM sessions 
-           WHERE user_id = ? AND role = ? AND is_active = TRUE AND session_id != ?`,
-          [user.id, role, req.sessionID]
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+        
+        await db.query(
+          `INSERT INTO sessions 
+           (session_id, data, expires_at, user_id, role, is_active, created_at, last_activity)
+           VALUES (?, ?, ?, ?, ?, TRUE, NOW(), NOW())
+           ON DUPLICATE KEY UPDATE
+           data = VALUES(data),
+           expires_at = VALUES(expires_at),
+           is_active = TRUE,
+           last_activity = NOW()`,
+          [
+            req.sessionID,
+            JSON.stringify(req.session),
+            expiresAt,
+            user.id,
+            role
+          ]
         );
         
-        if (existingSessions.length > 0) {
-          console.log(`Found ${existingSessions.length} existing sessions for user ${user.id}. Invalidating them.`);
-          
-          await db.query(
-            `UPDATE sessions 
-             SET is_active = FALSE, expires_at = NOW()
-             WHERE user_id = ? AND role = ? AND session_id != ?`,
-            [user.id, role, req.sessionID]
-          );
-        }
+        console.log(`Session record created in database: ${req.sessionID}`);
       } catch (dbError) {
-        console.error("Error checking for existing sessions:", dbError);
-        // Continue anyway, not critical
+        console.error("Error creating session record:", dbError);
+        // Continue anyway, express-session will still work
       }
       
       // Save the session
@@ -134,14 +162,14 @@ router.post("/login", async (req, res) => {
         
         // Return user data and session info
         return res.json({ 
-      success: true,
-      role,
-      user: {
-        id: user.id,
-        firstName: user.first_name,
+          success: true,
+          role,
+          user: {
+            id: user.id,
+            firstName: user.first_name,
             lastName: user.last_name,
             email: email
-      },
+          },
           sessionId: req.sessionID,
           redirect: role === 'teacher' ? '/pages/teacher-dashboard.html' : '/pages/student-dashboard.html'
         });
@@ -616,43 +644,97 @@ router.get("/check-auth", async (req, res) => {
       if (userData) {
         console.log(`Header-based auth successful for user ${userId} (${role})`);
         
-        // Create a new session for this user to prioritize session auth next time
-        req.session.userId = userData.id;
-        req.session.role = role;
-        req.session.firstName = userData.firstName;
-        req.session.lastName = userData.lastName;
-        
-        // Save the session explicitly
-        req.session.save(err => {
-          if (err) {
-            console.error("Error saving session:", err);
-          } else {
-            console.log("Created new session from header auth:", req.sessionID);
+        // IMPROVED SESSION HANDLING: Check for existing sessions before creating a new one
+        try {
+          // First check for existing active sessions for this user
+          const [existingSessions] = await db.query(
+            `SELECT session_id, expires_at > NOW() as is_active, data 
+             FROM sessions 
+             WHERE user_id = ? AND role = ? AND is_active = TRUE 
+             ORDER BY created_at DESC LIMIT 1`,
+            [userId, role]
+          );
+          
+          let sessionId = req.sessionID;
+          
+          if (existingSessions.length > 0 && existingSessions[0].is_active) {
+            // Use the most recent session instead of creating a new one
+            sessionId = existingSessions[0].session_id;
+            console.log(`Found existing active session: ${sessionId} - reusing instead of creating new one`);
             
-            // Store session in database manually to ensure it's there
-            db.query(
-              `INSERT INTO sessions (session_id, user_id, role, is_active, expires_at, created_at, last_activity)
-               VALUES (?, ?, ?, TRUE, DATE_ADD(NOW(), INTERVAL 1 DAY), NOW(), NOW())
-               ON DUPLICATE KEY UPDATE is_active = TRUE, expires_at = DATE_ADD(NOW(), INTERVAL 1 DAY), last_activity = NOW()`,
-              [req.sessionID, userData.id, role]
-            ).catch(err => console.error("Error storing session:", err));
+            // Parse the existing session data
+            try {
+              const sessionData = JSON.parse(existingSessions[0].data || '{}');
+              
+              // Update the current session with the existing data
+              req.session.userId = userId;
+              req.session.role = role;
+              req.session.firstName = userData.firstName;
+              req.session.lastName = userData.lastName;
+              
+              if (sessionData.email) req.session.email = sessionData.email;
+              
+              // Update last activity for the existing session
+              await db.query(
+                `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
+                [sessionId]
+              );
+            } catch (parseError) {
+              console.error("Error parsing existing session data:", parseError);
+              // Continue with basic session data
+            }
+          } else {
+            // No active session found, create a new one
+            console.log("No active session found, creating new session from header auth");
+            
+            // Create a new session for this user
+            req.session.userId = userData.id;
+            req.session.role = role;
+            req.session.firstName = userData.firstName;
+            req.session.lastName = userData.lastName;
+            
+            // Save the session explicitly
+            await new Promise((resolve, reject) => {
+              req.session.save(err => {
+                if (err) {
+                  console.error("Error saving session:", err);
+                  reject(err);
+                } else {
+                  console.log("Created new session from header auth:", req.sessionID);
+                  resolve();
+                }
+              });
+            });
+            
+            // Store session in database manually 
+            await db.query(
+              `INSERT INTO sessions (session_id, user_id, role, data, is_active, expires_at, created_at, last_activity)
+               VALUES (?, ?, ?, ?, TRUE, DATE_ADD(NOW(), INTERVAL 1 DAY), NOW(), NOW())
+               ON DUPLICATE KEY UPDATE is_active = TRUE, expires_at = DATE_ADD(NOW(), INTERVAL 1 DAY), last_activity = NOW(), data = VALUES(data)`,
+              [req.sessionID, userData.id, role, JSON.stringify(req.session)]
+            );
           }
-        });
-        
-        // Set cookie explicitly with proper settings
-        res.cookie('qr_attendance_sid', req.sessionID, {
-          httpOnly: true,
-          secure: true,
-          sameSite: 'none',
-          maxAge: 24 * 60 * 60 * 1000 // 24 hours
-        });
+          
+          // Set cookie explicitly with proper settings
+          const isProd = process.env.NODE_ENV === 'production';
+          res.cookie('qr_attendance_sid', sessionId, {
+            httpOnly: true,
+            secure: isProd,
+            sameSite: isProd ? 'none' : 'lax',
+            maxAge: 24 * 60 * 60 * 1000 // 24 hours
+          });
+          
+        } catch (sessionError) {
+          console.error("Error handling session during header auth:", sessionError);
+          // Continue with response even if session handling failed
+        }
         
         return res.json({
           authenticated: true,
           user: userData,
-          restored: true,
+          authMethod: "session",
           sessionID: req.sessionID,
-          message: "Authenticated via headers, created session"
+          message: "Authenticated via headers"
         });
       } else {
         console.log(`Invalid user ID or role in headers: ${userId} (${role})`);
