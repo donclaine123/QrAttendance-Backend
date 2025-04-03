@@ -186,54 +186,56 @@ router.post("/login", async (req, res) => {
 });
 
 // 📌 Updated logout endpoint
-router.post('/logout', (req, res) => {
+router.post('/logout', async (req, res) => {
   console.log('Logout requested - Session ID:', req.sessionID);
   
   if (req.session) {
-    // Capture user info for logging before destroying
+    // Capture user info and session ID for database deletion
     const userId = req.session.userId;
     const role = req.session.role;
+    const sessionId = req.sessionID; // Store session ID before destroying
     
     // Destroy the session
-    req.session.destroy(err => {
-      if (err) {
-        console.error('Session destruction error:', err);
-        return res.status(500).json({
-          success: false,
-          message: 'Error during logout',
-          error: process.env.NODE_ENV === 'development' ? err.message : undefined
-        });
-      }
-      
-      console.log(`✅ Logout successful for user ${userId} (${role})`);
-      
-      // Clear the cookie with proper options for production/development
-      const isProd = process.env.NODE_ENV === 'production';
-      const cookieOptions = {
-        path: '/',
-        httpOnly: true,
-        secure: isProd,
-        sameSite: isProd ? 'none' : 'lax'
-      };
-      
-      console.log(`Clearing cookie with options:`, cookieOptions);
-      
-      // Clear both cookie domains to ensure it's properly removed
-      res.clearCookie('qr_attendance_sid', cookieOptions);
-      
-      // Also try to delete from the database directly to ensure it's gone
-      try {
-        const db = require('../db');
-        db.query('DELETE FROM sessions WHERE session_id = ?', [req.sessionID]);
-      } catch (dbError) {
-        console.error('Error deleting session from database:', dbError);
-        // Non-critical error, continue
-      }
-      
-      return res.json({
-        success: true,
-        message: 'Logged out successfully'
+    await new Promise((resolve, reject) => {
+      req.session.destroy(err => {
+        if (err) {
+          console.error('Session destruction error:', err);
+          reject(err);
+        } else {
+          resolve();
+        }
       });
+    });
+    
+    console.log(`✅ Session destroyed for user ${userId} (${role})`);
+    
+    // Clear the cookie with proper options for production/development
+    const isProd = process.env.NODE_ENV === 'production';
+    const cookieOptions = {
+      path: '/',
+      httpOnly: true,
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax'
+    };
+    
+    console.log(`Clearing cookie with options:`, cookieOptions);
+    
+    // Clear both cookie domains to ensure it's properly removed
+    res.clearCookie('qr_attendance_sid', cookieOptions);
+    
+    // Delete from the database directly to ensure it's gone
+    try {
+      console.log(`Deleting session ${sessionId} from database`);
+      await db.query('DELETE FROM sessions WHERE session_id = ?', [sessionId]);
+      console.log(`Session successfully deleted from database`);
+    } catch (dbError) {
+      console.error('Error deleting session from database:', dbError);
+      // Non-critical error, continue
+    }
+    
+    return res.json({
+      success: true,
+      message: 'Logged out successfully'
     });
   } else {
     console.log('No session found during logout attempt');
