@@ -9,7 +9,6 @@ const session = require('express-session');
 const CustomMySQLStore = require('./Routes/CustomSessionStore');
 const qrSystem = require("./Routes/QrSystem");
 const crypto = require('crypto');
-const morgan = require('morgan');
 const path = require('path');
 const fs = require('fs');
 const rateLimit = require('express-rate-limit');
