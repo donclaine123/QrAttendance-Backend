@@ -72,6 +72,20 @@ const sessionMiddleware = session({
   key: 'qr_attendance_sid',
   secret: process.env.SESSION_SECRET || crypto.randomBytes(64).toString('hex'),
   store: sessionStore,
+  app.use(session({
+    secret: process.env.SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      secure: process.env.NODE_ENV === 'production',
+      httpOnly: true,
+      sameSite: 'none',
+      maxAge: parseInt(process.env.SESSION_LIFETIME)
+    },
+    store: new MySQLStore({
+      /* ... existing store config ... */
+    })
+  }));
   resave: false,
   saveUninitialized: false,
   cookie: {
