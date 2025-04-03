@@ -338,7 +338,7 @@ const authenticate = async (req, res, next) => {
 
       if (sessions.length > 0) {
         const sessionData = JSON.parse(sessions[0].data);
-        req.user = {
+    req.user = { 
           id: sessions[0].user_id,
           role: sessions[0].role,
           firstName: sessionData.firstName,
@@ -346,8 +346,8 @@ const authenticate = async (req, res, next) => {
         };
         
         // Update last activity
-        await db.query(
-          `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
+      await db.query(
+        `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
           [sessionId]
         );
         
@@ -362,7 +362,7 @@ const authenticate = async (req, res, next) => {
 
       if (userId && userRole) {
         // Look up the most recent active session for this user
-        const [sessions] = await db.query(
+    const [sessions] = await db.query(
           `SELECT * FROM sessions 
            WHERE user_id = ? AND role = ? AND is_active = TRUE AND expires_at > NOW()
            ORDER BY last_activity DESC, created_at DESC LIMIT 1`,
@@ -370,7 +370,7 @@ const authenticate = async (req, res, next) => {
         );
 
         if (sessions.length > 0) {
-          const sessionData = JSON.parse(sessions[0].data);
+      const sessionData = JSON.parse(sessions[0].data);
           req.user = {
             id: parseInt(userId),
             role: userRole,
@@ -379,8 +379,8 @@ const authenticate = async (req, res, next) => {
           };
 
           // Update last activity
-          await db.query(
-            `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
+      await db.query(
+        `UPDATE sessions SET last_activity = NOW() WHERE session_id = ?`,
             [sessions[0].session_id]
           );
 
@@ -405,7 +405,7 @@ const authenticate = async (req, res, next) => {
         message: "Authentication required" 
       });
     }
-
+    
     next();
   } catch (error) {
     console.error("Authentication error:", error);
