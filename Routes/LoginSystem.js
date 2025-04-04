@@ -521,7 +521,7 @@ router.get("/verify", async (req, res) => {
       return res.json({ 
         success: true, 
         message: "Email verified! You can now log in.",
-        redirectUrl: "/index.html"
+        redirectUrl: "/pages/login.html"
       });
     }
 
@@ -535,7 +535,7 @@ router.get("/verify", async (req, res) => {
       return res.json({ 
         success: true, 
         message: "Email verified! You can now log in.",
-        redirectUrl: "/index.html"
+        redirectUrl: "/pages/login.html"
       });
     }
 
@@ -543,7 +543,7 @@ router.get("/verify", async (req, res) => {
     res.status(400).json({ 
       success: false, 
       message: "Invalid or expired verification token.",
-      redirectUrl: "/index.html"
+      redirectUrl: "/pages/login.html"
     });
   } catch (err) {
     console.error("Verification error:", err);
@@ -792,7 +792,7 @@ router.post('/direct-teacher-login', async (req, res) => {
             lastName: teacher.last_name
           },
           sessionId: req.sessionID,
-          redirect: '/teacher-dashboard'
+          redirect: '/pages/teacher-dashboard.html'
         });
       });
     });
