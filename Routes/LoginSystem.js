@@ -1140,5 +1140,44 @@ router.post("/reauth", async (req, res) => {
   }
 });
 
+// Add endpoint to get student classes
+router.get("/student-classes/:studentId", async (req, res) => {
+  try {
+    const studentId = req.params.studentId;
+    
+    console.log(`Getting classes for student ID: ${studentId}`);
+    
+    // Verify the student exists
+    const [students] = await db.query(
+      "SELECT id FROM students WHERE id = ?",
+      [studentId]
+    );
+    
+    if (students.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Student not found"
+      });
+    }
+    
+    // For now, return all classes since we don't have a student-class enrollment table yet
+    // In a real application, you would query the enrollment table
+    const [classes] = await db.query(
+      "SELECT id, class_name, subject, description FROM class_records WHERE is_active = TRUE"
+    );
+    
+    return res.json({
+      success: true,
+      classes: classes
+    });
+  } catch (error) {
+    console.error("Error getting student classes:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to retrieve classes"
+    });
+  }
+});
+
 module.exports = router;
 
