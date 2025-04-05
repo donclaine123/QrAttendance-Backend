@@ -519,6 +519,11 @@ app.use("/auth", qrSystem);
 // Add teacher routes with proper path
 app.use("/teacher", qrSystem);
 
+// Debug route mapping
+console.log("🛣️ Routes configured:");
+console.log("  - /auth/... -> loginSystem, attendanceSystem, qrSystem");
+console.log("  - /teacher/... -> qrSystem");
+
 // Around the CORS configuration
 app.use(cors({
   origin: process.env.FRONTEND_URL,

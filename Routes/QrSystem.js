@@ -507,4 +507,48 @@ router.get("/class-sessions/:classId", authenticate, requireRole('teacher'), asy
   }
 });
 
+// Get recent attendance summary for teacher dashboard
+router.get("/recent-attendance-summary", authenticate, requireRole('teacher'), async (req, res) => {
+  try {
+    const teacherId = req.user.id;
+    
+    // Fetch recent attendance records grouped by class and date
+    // Modified to only count present students without attempting to calculate absences
+    const [records] = await db.query(
+      `SELECT 
+        cr.class_name,
+        DATE_FORMAT(qs.created_at, '%Y-%m-%d') as attendance_date,
+        COUNT(a.id) as present_count
+       FROM qr_sessions qs
+       JOIN class_records cr ON qs.class_id = cr.id
+       LEFT JOIN attendance a ON a.session_id = qs.session_id
+       WHERE qs.teacher_id = ?
+       GROUP BY cr.id, DATE_FORMAT(qs.created_at, '%Y-%m-%d')
+       ORDER BY qs.created_at DESC
+       LIMIT 5`,
+      [teacherId]
+    );
+    
+    // If no records found, return empty array
+    if (records.length === 0) {
+      return res.json({
+        success: true,
+        records: []
+      });
+    }
+    
+    res.json({
+      success: true,
+      records
+    });
+  } catch (error) {
+    console.error("Recent attendance summary error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch recent attendance summary",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 module.exports = router;
