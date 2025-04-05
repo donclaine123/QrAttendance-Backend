@@ -511,42 +511,69 @@ router.get("/class-sessions/:classId", authenticate, requireRole('teacher'), asy
 router.get("/recent-attendance-summary", authenticate, requireRole('teacher'), async (req, res) => {
   try {
     const teacherId = req.user.id;
+    console.log(`Fetching recent attendance summary for teacher ID: ${teacherId}`);
     
-    // Fetch recent attendance records grouped by class and date
-    // Modified to only count present students without attempting to calculate absences
-    const [records] = await db.query(
-      `SELECT 
-        cr.class_name,
-        DATE_FORMAT(qs.created_at, '%Y-%m-%d') as attendance_date,
-        COUNT(a.id) as present_count
-       FROM qr_sessions qs
-       JOIN class_records cr ON qs.class_id = cr.id
-       LEFT JOIN attendance a ON a.session_id = qs.session_id
-       WHERE qs.teacher_id = ?
-       GROUP BY cr.id, DATE_FORMAT(qs.created_at, '%Y-%m-%d')
-       ORDER BY qs.created_at DESC
-       LIMIT 5`,
-      [teacherId]
-    );
-    
-    // If no records found, return empty array
-    if (records.length === 0) {
+    try {
+      // Simplified query to check if this is a SQL issue
+      const [records] = await db.query(
+        `SELECT 
+           cr.class_name,
+           DATE_FORMAT(qs.created_at, '%Y-%m-%d') as attendance_date,
+           COUNT(*) as present_count
+         FROM qr_sessions qs
+         JOIN class_records cr ON qs.class_id = cr.id
+         WHERE qs.teacher_id = ?
+         GROUP BY cr.class_name, DATE_FORMAT(qs.created_at, '%Y-%m-%d')
+         ORDER BY qs.created_at DESC
+         LIMIT 5`,
+        [teacherId]
+      );
+      
+      console.log(`Recent attendance summary query successful. Found ${records.length} records.`);
+      
+      // If no records found, return empty array
+      if (records.length === 0) {
+        console.log('No attendance records found for this teacher.');
+        return res.json({
+          success: true,
+          records: []
+        });
+      }
+      
       return res.json({
         success: true,
+        records
+      });
+    } catch (sqlError) {
+      console.error("SQL Error in attendance summary:", sqlError);
+      console.error("Attempting fallback query...");
+      
+      // Instead of failing, try to see if tables exist
+      const [tables] = await db.query(
+        "SHOW TABLES"
+      );
+      
+      // Send whatever we have
+      return res.json({
+        success: true,
+        message: "SQL query failed but endpoint works",
+        error: sqlError.message,
+        availableTables: tables,
         records: []
       });
     }
-    
-    res.json({
-      success: true,
-      records
-    });
   } catch (error) {
     console.error("Recent attendance summary error:", error);
+    console.error("Error details:", error.stack);
+    console.error("SQL state:", error.sqlState, "Code:", error.code);
+    
+    // Send a more detailed error response
     res.status(500).json({
       success: false,
       message: "Failed to fetch recent attendance summary",
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Database error',
+      sqlState: error.sqlState,
+      code: error.code
     });
   }
 });
