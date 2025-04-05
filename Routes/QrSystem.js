@@ -7,7 +7,7 @@ const { authenticate, requireRole } = require("./authMiddleware");
 // Generate QR Code
 router.post("/generate-qr", authenticate, requireRole('teacher'), async (req, res) => {
   try {
-    const { subject, class_id, teacher_id } = req.body;
+    const { subject, class_id, teacher_id, section } = req.body;
     
     if (!class_id || !teacher_id) {
       return res.status(400).json({ 
@@ -29,14 +29,15 @@ router.post("/generate-qr", authenticate, requireRole('teacher'), async (req, re
     // Insert the session into the database
     const insertQuery = `
       INSERT INTO qr_sessions 
-      (session_id, teacher_id, class_id, subject, expires_at, created_at)
-      VALUES (?, ?, ?, ?, ?, NOW())
+      (session_id, teacher_id, class_id, section, subject, expires_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, NOW())
     `;
     
     await db.query(insertQuery, [
       session_id,
       teacher_id,
       class_id,
+      section || null,
       subject,
       expiresAtUTC8
     ]);
@@ -54,7 +55,7 @@ router.post("/generate-qr", authenticate, requireRole('teacher'), async (req, re
       });
     }
     
-    console.log(`QR session created: ${session_id} for class ${class_id}, expires at ${expiresAtUTC8}`);
+    console.log(`QR session created: ${session_id} for class ${class_id}${section ? ', section ' + section : ''}, expires at ${expiresAtUTC8}`);
     
     // Build the QR code URL (this would be scanned by students)
     let baseUrl;
@@ -72,12 +73,15 @@ router.post("/generate-qr", authenticate, requireRole('teacher'), async (req, re
       console.log(`Using backend URL as fallback: ${baseUrl}`);
     }
     
-    const qrCodeUrl = `${baseUrl}/attend?session=${session_id}&teacher=${teacher_id}&subject=${encodeURIComponent(subject || '')}`;
+    // Include section in the QR code URL if provided
+    const sectionParam = section ? `&section=${encodeURIComponent(section)}` : '';
+    const qrCodeUrl = `${baseUrl}/attend?session=${session_id}&teacher=${teacher_id}&subject=${encodeURIComponent(subject || '')}${sectionParam}`;
     
     return res.json({
       success: true,
       sessionId: session_id,
       qrCodeUrl,
+      section: section || null,
       expiresAt: expiresAtUTC8.toISOString()
     });
     
@@ -356,7 +360,7 @@ router.get("/attendance/:sessionId", authenticate, requireRole('teacher'), async
     // Fetch session details first to verify teacher has access
     // Try to find by either id or session_id
     const [sessionDetails] = await db.query(
-      `SELECT id, session_id, teacher_id, class_id, subject 
+      `SELECT id, session_id, teacher_id, class_id, subject, section 
        FROM qr_sessions 
        WHERE (session_id = ? OR id = ?)`,
       [sessionId, sessionId]
@@ -417,6 +421,7 @@ router.get("/attendance/:sessionId", authenticate, requireRole('teacher'), async
       sessionId: actualSessionId,
       className,
       subject: sessionDetails[0].subject || "Unknown Subject",
+      section: sessionDetails[0].section || null,
       attendanceRecords,
       count: attendanceRecords.length
     });
@@ -469,6 +474,7 @@ router.get("/class-sessions/:classId", authenticate, requireRole('teacher'), asy
         DATE_FORMAT(DATE_ADD(s.created_at, INTERVAL 8 HOUR), '%Y-%m-%d %H:%i:%s') as created_at, 
         DATE_FORMAT(DATE_ADD(s.expires_at, INTERVAL 8 HOUR), '%Y-%m-%d %H:%i:%s') as expires_at,
         s.subject,
+        s.section,
         c.class_name
        FROM qr_sessions s
        LEFT JOIN class_records c ON s.class_id = c.id
@@ -486,6 +492,7 @@ router.get("/class-sessions/:classId", authenticate, requireRole('teacher'), asy
       created_at: session.created_at,
       expires_at: session.expires_at,
       subject: session.subject,
+      section: session.section,
       class_name: session.class_name
     }));
     
