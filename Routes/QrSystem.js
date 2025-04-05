@@ -514,6 +514,49 @@ router.get("/class-sessions/:classId", authenticate, requireRole('teacher'), asy
   }
 });
 
+// Get sections and session IDs for a specific class on a specific date
+router.get("/sessions-on-date", authenticate, requireRole('teacher'), async (req, res) => {
+  try {
+    const { classId, date } = req.query; // Expect YYYY-MM-DD format
+    const teacherId = req.user.id;
+
+    if (!classId || !date) {
+      return res.status(400).json({ success: false, message: "Class ID and Date are required." });
+    }
+
+    console.log(`Fetching sections for class ${classId} on date ${date} for teacher ${teacherId}`);
+
+    // Query distinct sections and their corresponding session_id for that day
+    // We use MIN(session_id) just to get one valid session_id per section for that day, 
+    // assuming session_id correlates somewhat with time, but any session_id for that section/day is fine.
+    // Using DATE() function to compare only the date part of created_at
+    const [sections] = await db.query(
+      `SELECT 
+         qs.section,
+         qs.session_id 
+       FROM qr_sessions qs 
+       WHERE qs.class_id = ? 
+         AND qs.teacher_id = ? 
+         AND DATE(qs.created_at) = ?
+       GROUP BY qs.section
+       ORDER BY qs.section`,
+      [classId, teacherId, date]
+    );
+
+    console.log(`Found ${sections.length} sections:`, sections);
+
+    res.json({ success: true, sections });
+
+  } catch (error) {
+    console.error("Error fetching sections for date:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch sections for the specified date.",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 // Get recent attendance summary for teacher dashboard
 router.get("/recent-attendance-summary", authenticate, requireRole('teacher'), async (req, res) => {
   try {
