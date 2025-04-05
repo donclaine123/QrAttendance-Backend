@@ -549,7 +549,7 @@ router.get("/recent-attendance-summary", authenticate, requireRole('teacher'), a
     console.log(`Fetching recent attendance summary for teacher ID: ${teacherId}`);
     
     try {
-      // Simplified query to check if this is a SQL issue
+      // Fetch recent attendance records grouped by class and date, ordered by latest first
       const [records] = await db.query(
         `SELECT 
            cr.class_name,
@@ -559,8 +559,7 @@ router.get("/recent-attendance-summary", authenticate, requireRole('teacher'), a
          JOIN class_records cr ON qs.class_id = cr.id
          WHERE qs.teacher_id = ?
          GROUP BY cr.class_name, DATE_FORMAT(qs.created_at, '%Y-%m-%d'), qs.session_id
-         ORDER BY qs.created_at DESC
-         LIMIT 5`,
+         ORDER BY qs.created_at DESC`,
         [teacherId]
       );
       
