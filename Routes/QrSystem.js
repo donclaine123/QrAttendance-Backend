@@ -442,13 +442,13 @@ router.get("/class-sessions/:classId", authenticate, requireRole('teacher'), asy
     const classId = req.params.classId;
     const teacherId = req.user.id;
     
-    console.log(`👨‍🏫 Fetching sessions for class ID ${classId}, teacher ${teacherId}`);
-    console.log(`Auth method: ${req.user.headerAuth ? 'header-based' : 'session-based'}`);
+    console.log(`👨‍🏫 Fetching DISTINCT DATES for class ID ${classId}, teacher ${teacherId}`);
+    // console.log(`Auth method: ${req.user.headerAuth ? 'header-based' : 'session-based'}`);
     
-    // Additional validation for header-based auth
-    if (req.user.headerAuth) {
-      console.log(`Using header auth values: ID=${req.headers['x-user-id']}, Role=${req.headers['x-user-role']}`);
-    }
+    // // Additional validation for header-based auth
+    // if (req.user.headerAuth) {
+    //   console.log(`Using header auth values: ID=${req.headers['x-user-id']}, Role=${req.headers['x-user-role']}`);
+    // }
     
     // Verify the class belongs to this teacher
     const [classCheck] = await db.query(
@@ -464,51 +464,37 @@ router.get("/class-sessions/:classId", authenticate, requireRole('teacher'), asy
       });
     }
     
-    console.log(`✅ Class verification successful: "${classCheck[0].class_name}" (ID: ${classId})`);
+    // console.log(`✅ Class verification successful: "${classCheck[0].class_name}" (ID: ${classId})`);
     
-    // Get sessions for this class with UTC+8 time format using MySQL functions
-    const [sessions] = await db.query(
-      `SELECT 
-        s.id, 
-        s.session_id,
-        DATE_FORMAT(DATE_ADD(s.created_at, INTERVAL 8 HOUR), '%Y-%m-%d %H:%i:%s') as created_at, 
-        DATE_FORMAT(DATE_ADD(s.expires_at, INTERVAL 8 HOUR), '%Y-%m-%d %H:%i:%s') as expires_at,
-        s.subject,
-        s.section,
-        c.class_name
+    // --- NEW QUERY ---
+    // Get distinct dates (YYYY-MM-DD) on which sessions exist for this class/teacher
+    const [distinctDates] = await db.query(
+      `SELECT DISTINCT
+         DATE_FORMAT(s.created_at, '%Y-%m-%d') as session_date
        FROM qr_sessions s
-       LEFT JOIN class_records c ON s.class_id = c.id
        WHERE s.teacher_id = ? AND s.class_id = ?
-       ORDER BY s.created_at DESC`,
+       ORDER BY session_date DESC`, // Order by most recent date first
       [teacherId, classId]
     );
     
-    console.log(`👨‍🏫 Found ${sessions.length} sessions for class ${classId}`);
+    console.log(`👨‍🏫 Found ${distinctDates.length} distinct dates for class ${classId}`);
     
-    // Format the sessions to include both id and session_id
-    const formattedSessions = sessions.map(session => ({
-      id: session.id,
-      session_id: session.session_id,
-      created_at: session.created_at,
-      expires_at: session.expires_at,
-      subject: session.subject,
-      section: session.section,
-      class_name: session.class_name
-    }));
-    
+    // --- MODIFIED RESPONSE ---
+    // Send back the list of date strings
     return res.json({
       success: true,
-      sessions: formattedSessions,
-      count: formattedSessions.length,
+      // Rename 'sessions' to 'dates' for clarity
+      dates: distinctDates.map(d => d.session_date), // Send only the date strings
+      count: distinctDates.length,
       teacherId: teacherId, // Include teacherId for verification
       className: classCheck[0].class_name
     });
     
   } catch (error) {
-    console.error("Error fetching class sessions:", error);
+    console.error("Error fetching distinct session dates:", error);
     return res.status(500).json({
       success: false,
-      message: "Failed to fetch sessions for this class",
+      message: "Failed to fetch session dates for this class",
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
