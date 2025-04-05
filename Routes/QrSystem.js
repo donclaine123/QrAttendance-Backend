@@ -549,17 +549,21 @@ router.get("/recent-attendance-summary", authenticate, requireRole('teacher'), a
     console.log(`Fetching recent attendance summary for teacher ID: ${teacherId}`);
     
     try {
-      // Fetch recent attendance records grouped by class and date, ordered by latest first
+      // Fetch records including section and full timestamp
       const [records] = await db.query(
         `SELECT 
            cr.class_name,
-           DATE_FORMAT(qs.created_at, '%Y-%m-%d') as attendance_date,
+           qs.section, -- Select the section
+           DATE_FORMAT(qs.created_at, '%Y-%m-%d') as attendance_date, -- Keep the date part
+           TIME_FORMAT(qs.created_at, '%h:%i:%s %p') as attendance_time, -- Get formatted time
+           qs.created_at as full_timestamp, -- Keep original timestamp for sorting
            (SELECT COUNT(*) FROM attendance a WHERE a.session_id = qs.session_id) as present_count
          FROM qr_sessions qs
          JOIN class_records cr ON qs.class_id = cr.id
          WHERE qs.teacher_id = ?
-         GROUP BY cr.class_name, DATE_FORMAT(qs.created_at, '%Y-%m-%d'), qs.session_id
-         ORDER BY qs.created_at DESC`,
+         -- Group by all non-aggregated fields to ensure correctness
+         GROUP BY cr.class_name, qs.section, attendance_date, attendance_time, qs.session_id, qs.created_at
+         ORDER BY qs.created_at DESC`, // Order by the original timestamp
         [teacherId]
       );
       
