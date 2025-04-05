@@ -262,33 +262,80 @@ router.post("/classes", authenticate, requireRole('teacher'), async (req, res) =
   }
 });
 
-// Delete a class (soft delete - mark as inactive)
+// Delete a class (hard delete)
 router.delete("/classes/:classId", authenticate, requireRole('teacher'), async (req, res) => {
   try {
     const classId = req.params.classId;
     const teacherId = req.user.id;
     
-    // Verify ownership and soft delete the class
-    const [result] = await db.query(
-      `UPDATE class_records
-       SET is_active = FALSE
+    // Start a transaction to ensure data consistency
+    await db.query('START TRANSACTION');
+    
+    // First check if the class exists and belongs to this teacher
+    const [classCheck] = await db.query(
+      `SELECT id FROM class_records
        WHERE id = ? AND teacher_id = ?`,
       [classId, teacherId]
     );
     
-    if (result.affectedRows === 0) {
+    if (classCheck.length === 0) {
+      await db.query('ROLLBACK');
       return res.status(404).json({
         success: false,
         message: "Class not found or you don't have permission to delete it"
       });
     }
     
+    // Check for related attendance records
+    const [attendanceCheck] = await db.query(
+      `SELECT COUNT(*) as count FROM qr_sessions
+       WHERE class_id = ?`,
+      [classId]
+    );
+    
+    // If there are related records in qr_sessions, we need to clean those up first
+    if (attendanceCheck[0].count > 0) {
+      console.log(`Cleaning up ${attendanceCheck[0].count} related QR sessions`);
+      
+      // Get all session_ids for this class
+      const [sessionIds] = await db.query(
+        `SELECT session_id FROM qr_sessions WHERE class_id = ?`,
+        [classId]
+      );
+      
+      // Delete attendance records related to these sessions
+      for (const session of sessionIds) {
+        await db.query(
+          `DELETE FROM attendance WHERE session_id = ?`,
+          [session.session_id]
+        );
+      }
+      
+      // Delete the sessions themselves
+      await db.query(
+        `DELETE FROM qr_sessions WHERE class_id = ?`,
+        [classId]
+      );
+    }
+    
+    // Finally, delete the class record
+    const [result] = await db.query(
+      `DELETE FROM class_records WHERE id = ?`,
+      [classId]
+    );
+    
+    // Commit the transaction
+    await db.query('COMMIT');
+    
     res.json({
       success: true,
-      message: "Class deleted successfully",
+      message: "Class and all related data permanently deleted",
       classId
     });
   } catch (error) {
+    // Rollback in case of error
+    await db.query('ROLLBACK');
+    
     console.error("Class deletion error:", error);
     res.status(500).json({
       success: false,
