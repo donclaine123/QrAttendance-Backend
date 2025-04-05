@@ -519,11 +519,11 @@ router.get("/recent-attendance-summary", authenticate, requireRole('teacher'), a
         `SELECT 
            cr.class_name,
            DATE_FORMAT(qs.created_at, '%Y-%m-%d') as attendance_date,
-           COUNT(*) as present_count
+           (SELECT COUNT(*) FROM attendance a WHERE a.session_id = qs.session_id) as present_count
          FROM qr_sessions qs
          JOIN class_records cr ON qs.class_id = cr.id
          WHERE qs.teacher_id = ?
-         GROUP BY cr.class_name, DATE_FORMAT(qs.created_at, '%Y-%m-%d')
+         GROUP BY cr.class_name, DATE_FORMAT(qs.created_at, '%Y-%m-%d'), qs.session_id
          ORDER BY qs.created_at DESC
          LIMIT 5`,
         [teacherId]
