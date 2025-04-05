@@ -527,13 +527,12 @@ router.get("/sessions-on-date", authenticate, requireRole('teacher'), async (req
     console.log(`Fetching sections for class ${classId} on date ${date} for teacher ${teacherId}`);
 
     // Query distinct sections and their corresponding session_id for that day
-    // We use MIN(session_id) just to get one valid session_id per section for that day, 
-    // assuming session_id correlates somewhat with time, but any session_id for that section/day is fine.
+    // Use MIN(qs.session_id) to get one representative session_id per section group
     // Using DATE() function to compare only the date part of created_at
     const [sections] = await db.query(
       `SELECT 
          qs.section,
-         qs.session_id 
+         MIN(qs.session_id) as session_id 
        FROM qr_sessions qs 
        WHERE qs.class_id = ? 
          AND qs.teacher_id = ? 
