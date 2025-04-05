@@ -508,7 +508,7 @@ router.get("/class-sessions/:classId", authenticate, requireRole('teacher'), asy
 });
 
 // Get recent attendance summary for teacher dashboard
-router.get("/teacher/recent-attendance-summary", authenticate, requireRole('teacher'), async (req, res) => {
+router.get("/recent-attendance-summary", authenticate, requireRole('teacher'), async (req, res) => {
   try {
     const teacherId = req.user.id;
     
