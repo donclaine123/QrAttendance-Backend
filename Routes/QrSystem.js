@@ -554,8 +554,8 @@ router.get("/recent-attendance-summary", authenticate, requireRole('teacher'), a
         `SELECT 
            cr.class_name,
            qs.section, -- Select the section
-           DATE_FORMAT(qs.created_at, '%Y-%m-%d') as attendance_date, -- Keep the date part
-           TIME_FORMAT(qs.created_at, '%h:%i:%s %p') as attendance_time, -- Get formatted time
+           DATE_FORMAT(DATE_ADD(qs.created_at, INTERVAL 8 HOUR), '%Y-%m-%d') as attendance_date, -- Format date to UTC+8
+           TIME_FORMAT(DATE_ADD(qs.created_at, INTERVAL 8 HOUR), '%h:%i:%s %p') as attendance_time, -- Format time to UTC+8
            qs.created_at as full_timestamp, -- Keep original timestamp for sorting
            (SELECT COUNT(*) FROM attendance a WHERE a.session_id = qs.session_id) as present_count
          FROM qr_sessions qs
