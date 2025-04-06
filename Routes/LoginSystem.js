@@ -483,10 +483,13 @@ router.post("/register", async (req, res) => {
       html: getVerificationEmailTemplate(verifyUrl, firstName),
     });
 
+    // Send back requiresVerification flag and user email
     res.json({ 
       success: true, 
       message: "Registration successful! Check your email for verification.",
-      userId: userId
+      userId: userId,
+      requiresVerification: true, // Explicitly add this flag
+      email: email // Add the email used for registration
     });
   } catch (err) {
     console.error("Registration error:", err);
