@@ -19,14 +19,11 @@ router.post("/generate-qr", authenticate, requireRole('teacher'), async (req, re
     // Generate a unique session ID
     const session_id = crypto.randomBytes(16).toString("hex");
     
-    // Set expiration to 10 minutes from now
+    // Set expiration to 10 minutes from now (in UTC or server time)
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + 10 * 60 * 1000); // 10 minutes in UTC
+    const expiresAt = new Date(now.getTime() + 10 * 60 * 1000); 
     
-    // Convert to UTC+8 for database storage
-    const expiresAtUTC8 = new Date(expiresAt.getTime() + 8 * 60 * 60 * 1000);
-    
-    // Insert the session into the database
+    // Insert the session into the database using the calculated UTC expiration time
     const insertQuery = `
       INSERT INTO qr_sessions 
       (session_id, teacher_id, class_id, section, subject, expires_at, created_at)
@@ -39,12 +36,12 @@ router.post("/generate-qr", authenticate, requireRole('teacher'), async (req, re
       class_id,
       section || null,
       subject,
-      expiresAtUTC8
+      expiresAt // Store the actual expiration time
     ]);
     
     // Check if the session was created successfully
     const [sessionCheck] = await db.query(
-      "SELECT * FROM qr_sessions WHERE session_id = ?",
+      "SELECT expires_at FROM qr_sessions WHERE session_id = ?", // Fetch expires_at to confirm
       [session_id]
     );
     
@@ -54,8 +51,8 @@ router.post("/generate-qr", authenticate, requireRole('teacher'), async (req, re
         message: "Failed to create QR session"
       });
     }
-    
-    console.log(`QR session created: ${session_id} for class ${class_id}${section ? ', section ' + section : ''}, expires at ${expiresAtUTC8}`);
+    // Log the actual stored expiration time (MySQL driver might return it as a JS Date in server timezone or string)
+    console.log(`QR session created: ${session_id} for class ${class_id}${section ? ', section ' + section : ''}, expires at (DB value): ${sessionCheck[0].expires_at}`);
     
     // Build the QR code URL (this would be scanned by students)
     let baseUrl;
@@ -77,12 +74,13 @@ router.post("/generate-qr", authenticate, requireRole('teacher'), async (req, re
     const sectionParam = section ? `&section=${encodeURIComponent(section)}` : '';
     const qrCodeUrl = `${baseUrl}/attend?session=${session_id}&teacher=${teacher_id}&subject=${encodeURIComponent(subject || '')}${sectionParam}`;
     
+    // Return the actual expiration time (as ISO string)
     return res.json({
       success: true,
       sessionId: session_id,
       qrCodeUrl,
       section: section || null,
-      expiresAt: expiresAtUTC8.toISOString()
+      expiresAt: expiresAt.toISOString() // Return the actual UTC expiration time
     });
     
   } catch (error) {
