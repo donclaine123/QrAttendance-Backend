@@ -614,4 +614,73 @@ router.get("/recent-attendance-summary", authenticate, requireRole('teacher'), a
   }
 });
 
+// 📌 NEW Endpoint: Get Active QR Sessions for Teacher
+router.get("/active-sessions", authenticate, requireRole('teacher'), async (req, res) => {
+  try {
+    const teacherId = req.user.id;
+
+    const [sessions] = await db.query(
+      `SELECT
+          qs.session_id,
+          qs.class_id,
+          qs.section,
+          qs.subject,
+          qs.expires_at,
+          qs.teacher_id,
+          cr.class_name
+       FROM qr_sessions qs
+       LEFT JOIN class_records cr ON qs.class_id = cr.id AND cr.teacher_id = qs.teacher_id
+       WHERE qs.teacher_id = ? AND qs.expires_at > NOW() AND qs.is_active = TRUE
+       ORDER BY qs.created_at DESC`,
+      [teacherId]
+    );
+
+    // Determine Base URL (similar logic to /generate-qr)
+    let baseUrl;
+    const frontendUrlHeader = req.headers['x-forwarded-host'] || req.headers.origin;
+    if (frontendUrlHeader) {
+        try {
+            // Ensure URL has a scheme for parsing
+            const fullUrl = frontendUrlHeader.startsWith('http') ? frontendUrlHeader : `https://${frontendUrlHeader}`;
+            const parsedUrl = new URL(fullUrl);
+            baseUrl = parsedUrl.origin; // Use origin (scheme + hostname + port)
+            console.log(`[Active Sessions] Using frontend URL from header: ${baseUrl}`);
+        } catch (e) {
+            console.warn(`[Active Sessions] Invalid frontend URL header: ${frontendUrlHeader}, falling back. Error: ${e.message}`);
+            baseUrl = `${req.protocol}://${req.get("host")}`; // Fallback
+        }
+    } else {
+        baseUrl = `${req.protocol}://${req.get("host")}`; // Fallback
+        console.log(`[Active Sessions] Using backend URL as fallback: ${baseUrl}`);
+    }
+
+
+    // Add qrCodeUrl to each session object
+    const sessionsWithUrl = sessions.map(session => {
+      const sectionParam = session.section ? `&section=${encodeURIComponent(session.section)}` : '';
+      const subjectParam = session.subject ? `&subject=${encodeURIComponent(session.subject)}` : ''; // Use subject from session
+      const qrCodeUrl = `${baseUrl}/attend?session=${session.session_id}&teacher=${session.teacher_id}${subjectParam}${sectionParam}`;
+
+      return {
+        ...session,
+        expires_at_iso: new Date(session.expires_at).toISOString(), // Ensure ISO string format for JS
+        qrCodeUrl: qrCodeUrl
+      };
+    });
+
+    res.json({
+      success: true,
+      sessions: sessionsWithUrl,
+      count: sessionsWithUrl.length
+    });
+
+  } catch (error) {
+    console.error("Active sessions fetch error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch active sessions."
+    });
+  }
+});
+
 module.exports = router;
