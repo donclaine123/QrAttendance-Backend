@@ -251,7 +251,7 @@ Object.defineProperty(app.response, 'cookie', {
     // Set secure and sameSite for all cookies in production
     if (isProd) {
       cookieOptions.secure = true;
-      cookieOptions.sameSite = 'none';
+          cookieOptions.sameSite = 'none';
       // Set domain to allow cross-site cookies if in production
       // This helps with Netlify to Railway communication
       if (req.headers.origin && req.headers.origin.includes('netlify.app')) {
