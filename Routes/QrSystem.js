@@ -614,4 +614,73 @@ router.get("/recent-attendance-summary", authenticate, requireRole('teacher'), a
   }
 });
 
+// 📌 Get the most recent active QR session for the logged-in teacher
+router.get("/active-session", authenticate, requireRole('teacher'), async (req, res) => {
+  try {
+    const teacherId = req.user.id;
+
+    // Query for the most recent active session that hasn't expired
+    const [sessions] = await db.query(
+      `SELECT 
+         qs.session_id,
+         qs.teacher_id, 
+         qs.class_id,
+         qs.section,
+         qs.subject,
+         qs.expires_at,
+         cr.class_name -- Get class name for context
+       FROM qr_sessions qs
+       LEFT JOIN class_records cr ON qs.class_id = cr.id -- Join to get class name
+       WHERE qs.teacher_id = ? 
+         AND qs.is_active = TRUE 
+         AND qs.expires_at > NOW()
+       ORDER BY qs.created_at DESC
+       LIMIT 1`,
+      [teacherId]
+    );
+
+    if (sessions.length > 0) {
+      const activeSession = sessions[0];
+
+      // Reconstruct the QR Code URL (ensure this matches the logic in /generate-qr)
+      // Determine base URL (copied logic from /generate-qr for consistency)
+      let baseUrl;
+      const frontendUrl = req.headers['x-forwarded-host'] || req.headers.origin;
+      if (frontendUrl && frontendUrl.includes('netlify.app')) {
+        baseUrl = frontendUrl.startsWith('http') ? frontendUrl : `https://${frontendUrl}`;
+      } else {
+        baseUrl = req.protocol + "://" + req.get("host");
+      }
+      const sectionParam = activeSession.section ? `&section=${encodeURIComponent(activeSession.section)}` : '';
+      const qrCodeUrl = `${baseUrl}/attend?session=${activeSession.session_id}&teacher=${activeSession.teacher_id}&subject=${encodeURIComponent(activeSession.subject || '')}${sectionParam}`;
+
+      // Return the necessary data
+      res.json({
+        success: true,
+        activeSession: {
+          sessionId: activeSession.session_id,
+          teacherId: activeSession.teacher_id,
+          classId: activeSession.class_id,
+          className: activeSession.class_name,
+          section: activeSession.section,
+          subject: activeSession.subject,
+          expiresAt: activeSession.expires_at.toISOString(), // Ensure ISO string format
+          qrCodeUrl: qrCodeUrl
+        }
+      });
+    } else {
+      // No active session found
+      res.json({ success: true, activeSession: null });
+    }
+
+  } catch (error) {
+    console.error("Error fetching active QR session:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Failed to fetch active session.",
+      error: error.message
+    });
+  }
+});
+
 module.exports = router;
