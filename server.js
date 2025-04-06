@@ -512,31 +512,14 @@ app.post('/auth/reset-all-sessions', async (req, res) => {
   }
 });
 
-// API routes
-app.use("/auth", loginSystem);  
-app.use("/auth", attendanceSystem);
-app.use("/auth", qrSystem);
-// Add teacher routes with proper path
-app.use("/teacher", qrSystem);
+// Define your API routes here
+// Add the /api prefix to match frontend expectations, especially for Netlify proxying
+app.use("/api/auth", loginSystem);
+app.use("/api/attendance", attendanceSystem);
+app.use("/api/qr", qrSystem);
 
-// Around the CORS configuration
-app.use(cors({
-  origin: process.env.FRONTEND_URL,
-  credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  exposedHeaders: ['Content-Length', 'X-Session-Id']
-}));
-
-// Forward /attend route to /auth/attend
-app.get('/attend', (req, res) => {
-  console.log("⏩ Forwarding /attend to /auth/attend with params:", req.query);
-  const redirectUrl = `/auth/attend?${new URLSearchParams(req.query).toString()}`;
-  console.log("⏩ Redirect URL:", redirectUrl);
-  res.redirect(redirectUrl);
-});
-
-// Health check endpoint
-app.get('/health', (req, res) => {
+// Health check endpoint (should NOT be under /api)
+app.get("/health", (req, res) => {
   res.json({
     status: 'healthy',
     timestamp: new Date(),
