@@ -124,33 +124,36 @@ router.get("/sessions", authenticate, requireRole('teacher'), async (req, res) =
   }
 });
 
-// Invalidate a session
+// Invalidate a session (NOW DELETES)
 router.delete("/sessions/:sessionId", authenticate, requireRole('teacher'), async (req, res) => {
   try {
+    // Changed from UPDATE to DELETE
     const [result] = await db.query(
-      `UPDATE qr_sessions 
-       SET expires_at = NOW(), is_active = FALSE
-       WHERE session_id = ? AND teacher_id = ? AND expires_at > NOW() AND is_active = TRUE`,
+      `DELETE FROM qr_sessions 
+       WHERE session_id = ? AND teacher_id = ?`, // Removed expiry/active checks - delete if it exists & belongs to teacher
       [req.params.sessionId, req.user.id]
     );
 
     if (result.affectedRows === 0) {
+      // Session might not exist, or didn't belong to this teacher
       return res.status(404).json({ 
         success: false, 
-        message: "Session not found or already expired." 
+        message: "Session not found or you do not have permission to delete it." 
       });
     }
 
+    // Changed success message
     res.json({ 
       success: true, 
-      message: "Session invalidated successfully." 
+      message: "Session deleted successfully." 
     });
 
   } catch (error) {
-    console.error("Session invalidation error:", error);
+    console.error("Session deletion error:", error);
+    // Changed error message
     res.status(500).json({ 
       success: false, 
-      message: "Failed to invalidate session." 
+      message: "Failed to delete session." 
     });
   }
 });
