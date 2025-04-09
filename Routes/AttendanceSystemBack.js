@@ -214,7 +214,7 @@ router.post("/record-attendance", authenticate, async (req, res) => {
       
       console.log("📝 Attendance record inserted successfully:", insertResult);
       
-      // Return success response with UTC+8 timestamp
+      // Use UTC+8 timestamp for consistency if needed elsewhere, otherwise simple now is fine
       const now = new Date();
       const utc8Time = new Date(now.getTime() + 8 * 60 * 60 * 1000);
       
@@ -227,11 +227,9 @@ router.post("/record-attendance", authenticate, async (req, res) => {
       });
     } catch (insertError) {
       console.error("📝 DATABASE ERROR during attendance insertion:", insertError);
-      console.log("📝 SQL State:", insertError.sqlState, "Code:", insertError.code);
-      
       return res.status(500).json({
         success: false,
-        message: "Database error while recording attendance. Please try using /auth/fix-attendance-schema first."
+        message: "Database error while recording attendance. Please try again later."
       });
     }
     
