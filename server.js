@@ -513,9 +513,9 @@ app.post('/auth/reset-all-sessions', async (req, res) => {
 });
 
 // API routes
-app.use("/auth", loginSystem);
+app.use("/auth", loginSystem);  
 app.use("/auth", attendanceSystem);
-app.use("/qr", qrSystem);
+app.use("/auth", qrSystem);
 // Add teacher routes with proper path
 app.use("/teacher", qrSystem);
 
