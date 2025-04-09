@@ -7,7 +7,8 @@ const { authenticate, requireRole } = require("./authMiddleware");
 // Generate QR Code
 router.post("/generate-qr", authenticate, requireRole('teacher'), async (req, res) => {
   try {
-    const { subject, class_id, teacher_id, section } = req.body;
+    // Destructure duration from req.body
+    const { subject, class_id, teacher_id, section, duration } = req.body;
     
     if (!class_id || !teacher_id) {
       return res.status(400).json({ 
@@ -15,15 +16,21 @@ router.post("/generate-qr", authenticate, requireRole('teacher'), async (req, re
         message: "Class ID and Teacher ID are required" 
       });
     }
+
+    // --- Use selected duration --- 
+    // Validate duration (optional: add stricter checks like allowed values)
+    const durationMinutes = parseInt(duration) || 10; // Default to 10 if invalid or missing
+    console.log(`Using duration: ${durationMinutes} minutes`);
     
     // Generate a unique session ID
     const session_id = crypto.randomBytes(16).toString("hex");
     
-    // Set expiration to 10 minutes from now (in UTC or server time)
+    // Set expiration based on selected duration
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + 10 * 60 * 1000); 
+    const expiresAt = new Date(now.getTime() + durationMinutes * 60 * 1000);
+    // --- End duration logic ---
     
-    // Insert the session into the database using the calculated UTC expiration time
+    // Insert the session into the database using the calculated expiration time
     const insertQuery = `
       INSERT INTO qr_sessions 
       (session_id, teacher_id, class_id, section, subject, expires_at, created_at)
