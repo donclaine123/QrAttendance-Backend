@@ -442,6 +442,24 @@ router.post("/register", async (req, res) => {
   const { role, email, firstName, lastName, password, studentId } = req.body;
 
   try {
+    // --- Add Input Validation --- 
+    if (!role || !email || !firstName || !lastName || !password) {
+        return res.status(400).json({
+            success: false,
+            message: "Missing required fields: role, email, first name, last name, and password are all required."
+        });
+    }
+    
+    // Student ID is required only if role is student
+    if (role === 'student' && !studentId) {
+        return res.status(400).json({
+            success: false,
+            message: "Student ID is required for student registration."
+        });
+    }
+    // Optional: Add email format validation, password strength check here if desired
+    // --- End Input Validation ---
+
     // 🔹 Check if email already exists
     const [teacherRows] = await db.query("SELECT id FROM teachers WHERE email = ?", [email]);
     if (teacherRows.length > 0) {
