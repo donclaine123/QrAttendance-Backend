@@ -437,6 +437,96 @@ const requireRole = (role) => {
   };
 };
 
+// 📌 Get User Profile (requires authentication)
+router.get("/profile", authenticate, async (req, res) => {
+  // req.user is populated by the authenticate middleware
+  const userId = req.user.id;
+  const userRole = req.user.role;
+
+  try {
+    let query;
+    let params = [userId];
+
+    if (userRole === 'teacher') {
+      query = "SELECT id, email, first_name, last_name FROM teachers WHERE id = ?";
+    } else if (userRole === 'student') {
+      // Include student_id for students
+      query = "SELECT id, email, first_name, last_name, student_id FROM students WHERE id = ?";
+    } else {
+      return res.status(400).json({ success: false, message: "Invalid user role." });
+    }
+
+    const [rows] = await db.query(query, params);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: "User profile not found." });
+    }
+
+    // Exclude password hash
+    const userProfile = rows[0];
+
+    res.json({ success: true, user: userProfile });
+
+  } catch (error) {
+    console.error("Error fetching user profile:", error);
+    res.status(500).json({ success: false, message: "Server error fetching profile." });
+  }
+});
+
+// 📌 Update User Profile (requires authentication)
+router.put("/profile", authenticate, async (req, res) => {
+  const userId = req.user.id;
+  const userRole = req.user.role;
+  const { firstName, lastName } = req.body;
+
+  // --- Input Validation --- 
+  if (!firstName || firstName.trim() === '' || !lastName || lastName.trim() === '') {
+    return res.status(400).json({
+      success: false,
+      message: "First name and last name cannot be empty."
+    });
+  }
+  // Basic length check (optional)
+  if (firstName.trim().length > 50 || lastName.trim().length > 50) {
+       return res.status(400).json({
+           success: false,
+           message: "First name and last name must be 50 characters or less."
+       });
+   }
+  // --- End Validation ---
+
+  try {
+    let tableName;
+    if (userRole === 'teacher') {
+      tableName = "teachers";
+    } else if (userRole === 'student') {
+      tableName = "students";
+    } else {
+      return res.status(400).json({ success: false, message: "Invalid user role." });
+    }
+
+    // Prepare update query
+    const query = `UPDATE ${tableName} SET first_name = ?, last_name = ? WHERE id = ?`;
+    const params = [firstName.trim(), lastName.trim(), userId];
+
+    const [result] = await db.query(query, params);
+
+    if (result.affectedRows === 0) {
+      // Should not happen if authenticate middleware works correctly
+      return res.status(404).json({ success: false, message: "User not found for update." });
+    }
+    
+    // Update session data if necessary (may not be directly possible here, client should update sessionStorage)
+    // Optional: Fetch updated profile to return?
+
+    res.json({ success: true, message: "Profile updated successfully." });
+
+  } catch (error) {
+    console.error("Error updating user profile:", error);
+    res.status(500).json({ success: false, message: "Server error updating profile." });
+  }
+});
+
 // 📌 Register User
 router.post("/register", async (req, res) => {
   const { role, email, firstName, lastName, password, studentId } = req.body;
