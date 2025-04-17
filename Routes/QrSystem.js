@@ -134,21 +134,29 @@ router.get("/sessions", authenticate, requireRole('teacher'), async (req, res) =
 // Invalidate a session (NOW DELETES)
 router.delete("/sessions/:sessionId", authenticate, requireRole('teacher'), async (req, res) => {
   try {
+    const sessionIdToDelete = req.params.sessionId;
+    const teacherIdMakingRequest = req.user.id;
+    console.log(`DELETE /sessions/:sessionId - Attempting delete for session: ${sessionIdToDelete}, by teacher: ${teacherIdMakingRequest}`);
+
     // Changed from UPDATE to DELETE
     const [result] = await db.query(
       `DELETE FROM qr_sessions 
        WHERE session_id = ? AND teacher_id = ?`, // Removed expiry/active checks - delete if it exists & belongs to teacher
-      [req.params.sessionId, req.user.id]
+      [sessionIdToDelete, teacherIdMakingRequest]
     );
+
+    console.log(`DELETE /sessions/:sessionId - DB result: affectedRows = ${result.affectedRows}`);
 
     if (result.affectedRows === 0) {
       // Session might not exist, or didn't belong to this teacher
+      console.log(`DELETE /sessions/:sessionId - Session not found or teacher ID mismatch.`);
       return res.status(404).json({ 
         success: false, 
         message: "Session not found or you do not have permission to delete it." 
       });
     }
 
+    console.log(`DELETE /sessions/:sessionId - Deletion successful.`);
     // Changed success message
     res.json({ 
       success: true, 
