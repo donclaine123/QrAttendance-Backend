@@ -310,7 +310,8 @@ router.get('/student-attendance-history', authenticate, requireRole('student'), 
         DATE_FORMAT(DATE_ADD(a.recorded_at, INTERVAL 8 HOUR), '%Y-%m-%d %H:%i:%s') as timestamp,
         a.teacher_id,
         CONCAT(t.first_name, ' ', t.last_name) as teacherName,
-        COALESCE(a.subject, qs.subject, 'Unknown Subject') as subject
+        COALESCE(a.subject, qs.subject, 'Unknown Subject') as subject,
+        qs.section
        FROM attendance a
        JOIN teachers t ON a.teacher_id = t.id
        LEFT JOIN qr_sessions qs ON a.session_id = qs.session_id
